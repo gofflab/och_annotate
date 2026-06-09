@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# och_annotate local artifacts
+.cache/
+data/cache/
+*.parquet
+*.npz
+.env.local

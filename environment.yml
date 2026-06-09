@@ -1,0 +1,15 @@
+# Conda/mamba environment for och_annotate.
+#
+#   mamba env create -f environment.yml   # (or: conda env create -f environment.yml)
+#   conda activate och_annotate
+#
+# Heavy / fast-moving ML deps (esm SDK, torch, umap) are installed via pip so we
+# always track the published wheels rather than conda-forge lag.
+name: och_annotate
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -e .

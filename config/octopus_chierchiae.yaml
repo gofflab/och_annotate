@@ -1,0 +1,51 @@
+# Configuration for a single proteome annotation run.
+#
+# To add another proteome later, copy this file, change `name` + the baserow
+# ids/columns, and point the CLI at it:  och-annotate embed -c config/<new>.yaml
+name: octopus_chierchiae
+
+baserow:
+  base_url: "https://baserow.gofflab.org"
+  database_id: 206
+  table_id: 1026                 # Transcripts
+  # Columns to pull from Baserow as the protein sequence + metadata.
+  sequence_column: "protein_sequence"
+  id_column: "transcript_id"     # stable per-protein key used for caching/idempotency
+  metadata_columns:
+    - "gene_id"
+    - "transcript_id"
+    - "chromosome"
+    - "start"
+    - "end"
+    - "strand"
+    - "Ochierchiae_name"
+  # Columns written back with results. Created automatically if missing.
+  output_columns:
+    embedding: "esmc_embedding"      # JSON list[float] (mean-pooled vector)
+    model: "esmc_model"              # which ESMC model produced it
+    embedded_at: "esmc_embedded_at"  # ISO-8601 UTC timestamp
+    sae: "sae_top_features"          # JSON {sae_model: {indices, activations}} (SAE step)
+
+esmc:
+  model: "esmc-6b-2024-12"
+  url: "https://biohub.ai"
+  # Server-side mean pooling -> one vector per protein (cheap transfer, ideal for UMAP).
+  pooling: "mean"                # "mean" (return_mean_embedding) or "residue_mean" (local)
+  max_sequence_length: 2048      # ESMC limit; longer sequences are skipped + reported
+  request_timeout: 300
+
+sae:
+  # SAE is a separate, opt-in downstream step. Leave models empty to skip until
+  # you have the exact SAE identifier(s) available for esmc-6b on Biohub.
+  models: []                     # e.g. ["esmc-6b-sae-..."]
+  normalize_features: true
+  top_k: 64                      # high-scoring features kept per protein
+  pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"
+
+run:
+  batch_size: 16                 # proteins per Biohub batch request
+  max_attempts: 10               # retry attempts inside batch_executor
+  cache_dir: ".cache/octopus_chierchiae"
+  write_baserow: true            # write results back to the Transcripts table
+  use_cache: true                # read/write local cache so re-runs never re-call Biohub
+  skip_existing: true            # never re-embed proteins that already have an embedding

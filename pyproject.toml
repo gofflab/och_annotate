@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "och_annotate"
+version = "0.1.0"
+description = "Annotate proteomes with ESMC (Biohub) embeddings + SAE features and explore them via UMAP."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Goff Lab" }]
+dependencies = [
+    "esm>=3.1.0",          # Biohub/EvolutionaryScale ESMC SDK (pulls torch)
+    "requests>=2.31",      # Baserow REST client
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",         # parquet cache
+    "umap-learn>=0.5.5",   # dimensionality reduction
+    "plotly>=5.20",        # interactive UMAP exploration
+    "pyyaml>=6.0",         # config files
+    "python-dotenv>=1.0",  # load .env locally
+    "tqdm>=4.66",          # progress bars
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-mock>=3.12", "ruff>=0.4"]
+notebook = ["jupyterlab>=4.0", "ipywidgets>=8.1"]
+
+[project.scripts]
+och-annotate = "och_annotate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+och_annotate = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
