@@ -194,6 +194,48 @@ def sae_enrichment(adata, groupby: str = "leiden", method: str = "wilcoxon", n: 
     return table
 
 
+def cluster_feature_profile(adata, groupby: str = "leiden", n: int = 10) -> pd.DataFrame:
+    """Per-cluster SAE-feature profile ranked by mean normalized activation.
+
+    A salience + ubiquity view that complements ``sae_enrichment`` (which is
+    differential). For each cluster returns the top-``n`` features by
+    ``mean_activation`` — the mean *normalized* activation across cluster members
+    (0 where the feature is inactive) — alongside ``occurrence``, the fraction of
+    members in which the feature is active. Universal features (occurrence ~1)
+    define the family; partial ones flag subgroups/domain variants.
+
+    Returns tidy ``[cluster, rank, sae_feature, mean_activation, occurrence,
+    n_members]``.
+    """
+    from scipy import sparse
+
+    matrix = adata.X
+    matrix = matrix.tocsr() if sparse.issparse(matrix) else sparse.csr_matrix(matrix)
+    labels = adata.obs[groupby]
+    categories = labels.cat.categories if hasattr(labels, "cat") else sorted(labels.unique())
+    feat_ids = np.asarray(adata.var_names)
+
+    rows = []
+    for cluster in categories:
+        mask = (labels == cluster).to_numpy()
+        members = int(mask.sum())
+        if members == 0:
+            continue
+        sub = matrix[mask]
+        mean_act = np.asarray(sub.mean(axis=0)).ravel()
+        occurrence = np.asarray((sub > 0).sum(axis=0)).ravel() / members
+        for rank, f in enumerate(np.argsort(mean_act)[::-1][:n], start=1):
+            rows.append({
+                "cluster": cluster,
+                "rank": rank,
+                "sae_feature": int(feat_ids[f]),
+                "mean_activation": float(mean_act[f]),
+                "occurrence": float(occurrence[f]),
+                "n_members": members,
+            })
+    return pd.DataFrame(rows)
+
+
 def _pick_column(columns, candidates) -> str | None:
     lower = {str(c).lower(): c for c in columns}
     for cand in candidates:
