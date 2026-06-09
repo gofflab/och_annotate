@@ -90,6 +90,9 @@ och-annotate sae -c config/octopus_chierchiae.yaml
 # UMAP exploration -> interactive HTML
 och-annotate umap -c config/octopus_chierchiae.yaml --color chromosome --out umap.html
 
+# Color the UMAP by a single SAE feature's activation (0 where not in a protein's top-K)
+och-annotate umap -c config/octopus_chierchiae.yaml --sae-feature 8523 --out feat8523.html
+
 # Inspect Baserow columns
 och-annotate fields -c config/octopus_chierchiae.yaml
 ```

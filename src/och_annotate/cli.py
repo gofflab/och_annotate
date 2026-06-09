@@ -75,8 +75,16 @@ def cmd_umap(args) -> int:
         min_dist=args.min_dist,
         metric=args.metric,
     )
+    color = args.color
+    if args.sae_feature is not None:
+        from och_annotate.analysis import sae_feature_activation
+
+        color = f"SAE[{args.sae_feature}]"
+        coords[color] = sae_feature_activation(coords, args.sae_feature, args.sae_model)
+        active = int((coords[color] > 0).sum())
+        print(f"Coloring by SAE feature {args.sae_feature}: active in {active}/{len(coords)} proteins")
     if args.out:
-        fig = plot_umap(coords, color=args.color, title=f"{cfg.name} UMAP")
+        fig = plot_umap(coords, color=color, title=f"{cfg.name} UMAP")
         save_html(fig, args.out)
         print(f"Wrote interactive plot to {args.out}")
     else:
@@ -129,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_umap = sub.add_parser("umap", help="UMAP over stored embeddings")
     add_config(p_umap)
     p_umap.add_argument("--color", default=None, help="Metadata column to color points by")
+    p_umap.add_argument("--sae-feature", type=int, default=None, metavar="INDEX",
+                        help="Color by a SAE feature's activation (0 where not in a protein's top-K)")
+    p_umap.add_argument("--sae-model", default=None, metavar="ID",
+                        help="Which SAE model's features to read (default: the first stored)")
     p_umap.add_argument("--out", default=None, help="Write interactive HTML to this path")
     p_umap.add_argument("--from-baserow", action="store_true", help="Ignore cache, load from Baserow")
     p_umap.add_argument("--n-neighbors", type=int, default=15)

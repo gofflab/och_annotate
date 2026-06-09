@@ -44,6 +44,36 @@ def embedding_matrix(df: pd.DataFrame) -> np.ndarray:
     return np.vstack(df["embedding"].apply(np.asarray).to_numpy())
 
 
+def sae_feature_activation(
+    df: pd.DataFrame, feature_index: int, sae_model: str | None = None
+) -> pd.Series:
+    """Per-protein activation of one SAE feature, for coloring a UMAP.
+
+    Only the top-K features per protein are stored, so a protein that doesn't
+    have ``feature_index`` among its top-K returns ``0.0`` — which is the right
+    reading for sparse SAE features (that feature simply isn't active there).
+    """
+    if "sae_top_features" not in df.columns:
+        raise KeyError(
+            "No 'sae_top_features' column — embed/sae with SAE enabled first."
+        )
+
+    def _activation(cell) -> float:
+        if not cell:
+            return 0.0
+        feats = json.loads(cell) if isinstance(cell, str) else cell
+        entries = [feats.get(sae_model)] if sae_model else list(feats.values())
+        for entry in entries:
+            if not entry:
+                continue
+            indices = list(entry.get("indices", []))
+            if feature_index in indices:
+                return float(entry["activations"][indices.index(feature_index)])
+        return 0.0
+
+    return df["sae_top_features"].apply(_activation)
+
+
 def run_umap(
     df: pd.DataFrame,
     *,
