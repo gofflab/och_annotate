@@ -19,6 +19,8 @@ baserow:
     - "end"
     - "strand"
     - "Ochierchiae_name"
+    - "Mmusculus_gene_name"        # mouse ortholog gene name(s)
+    - "orthogroup"                 # OrthoFinder orthogroup id
   # Columns written back with results. Created automatically if missing.
   output_columns:
     embedding: "esmc_embedding"      # JSON list[float] (mean-pooled vector)

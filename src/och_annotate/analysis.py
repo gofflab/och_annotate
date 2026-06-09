@@ -22,7 +22,16 @@ def load_embeddings(config: Config, *, prefer_cache: bool = True) -> pd.DataFram
     cache = EmbeddingCache(config.run.cache_dir, id_column=config.baserow.id_column)
     if prefer_cache and len(cache) > 0:
         df = cache.to_frame()
-        return df[df["embedding"].notna()].reset_index(drop=True)
+        df = df[df["embedding"].notna()].reset_index(drop=True)
+        # Older caches may lack metadata columns added to the config later; pull
+        # any missing ones from Baserow (metadata only — no embedding calls).
+        missing = [c for c in config.baserow.metadata_columns if c not in df.columns]
+        if missing:
+            try:
+                df = _augment_metadata(df, config, missing)
+            except Exception:  # noqa: BLE001 - offline / no token -> skip augmentation
+                pass
+        return df
 
     # Fall back to Baserow.
     bw = config.baserow
@@ -38,6 +47,40 @@ def load_embeddings(config: Config, *, prefer_cache: bool = True) -> pd.DataFram
         rec["embedding"] = json.loads(raw) if isinstance(raw, str) else raw
         records.append(rec)
     return pd.DataFrame(records)
+
+
+def _augment_metadata(
+    df: pd.DataFrame, config: Config, columns: list[str], *, attempts: int = 5
+) -> pd.DataFrame:
+    """Left-merge extra Baserow columns into ``df``, keyed by the id column.
+
+    A cheap metadata-only backfill for fields absent from a cached run. Baserow
+    can return transient 500s, so the page sweep is retried with backoff; the
+    ``include=`` field filter is avoided (it 500s on this table) by fetching full
+    rows and selecting columns locally.
+    """
+    import time
+
+    bw = config.baserow
+    id_col = bw.id_column
+    client = BaserowClient(bw.base_url, config.baserow_token)
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            rows = list(client.iter_rows(bw.table_id))
+            break
+        except Exception as err:  # noqa: BLE001 - retry transient server errors
+            last_err = err
+            time.sleep(2 * (attempt + 1))
+    else:
+        raise last_err  # type: ignore[misc]
+
+    extra = pd.DataFrame(
+        {id_col: row.get(id_col), **{c: row.get(c) for c in columns}} for row in rows
+    )
+    if extra.empty:
+        return df
+    return df.merge(extra, on=id_col, how="left")
 
 
 def embedding_matrix(df: pd.DataFrame) -> np.ndarray:
@@ -243,6 +286,7 @@ def plot_umap(
     import plotly.express as px
 
     hover = hover or [c for c in df.columns if not c.startswith("umap_") and c != "embedding"]
+    hover = [h for h in hover if h in df.columns]  # tolerate optional cols being absent
     fig = px.scatter(
         df,
         x="umap_0",
