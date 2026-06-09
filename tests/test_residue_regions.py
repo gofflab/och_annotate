@@ -32,6 +32,19 @@ def test_top_features_as_dict_includes_regions_only_when_present():
     assert with_regions["regions"] == [[0, 3, 1]]
 
 
+def test_regions_are_additive_and_cover_every_top_feature():
+    # Regions must be one-per-feature and stored ALONGSIDE the existing pooled
+    # summary (indices + activations), never replacing it.
+    acts = np.random.default_rng(0).random((40, 8))   # 40 residues x 8 features
+    indices = [0, 3, 5, 7]                              # an arbitrary top-K set
+    regions = _residue_regions(acts, indices, threshold_frac=0.5)
+    assert len(regions) == len(indices)                # aligned 1:1 with indices
+    stored = TopFeatures(indices, [1.0, 0.9, 0.8, 0.7], regions=regions).as_dict()
+    assert stored["indices"] == indices                # summary retained
+    assert stored["activations"] == [1.0, 0.9, 0.8, 0.7]
+    assert len(stored["regions"]) == len(stored["indices"])
+
+
 def test_candidate_feature_report_with_and_without_regions():
     from och_annotate.analysis import candidate_feature_report
 
