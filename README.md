@@ -67,6 +67,11 @@ och-annotate embed -c config/octopus_chierchiae.yaml
 # Try a handful first
 och-annotate embed -c config/octopus_chierchiae.yaml --limit 10
 
+# Override SAE settings per run (no need to edit the YAML)
+och-annotate embed -c config/octopus_chierchiae.yaml --top-k 128
+och-annotate embed -c config/octopus_chierchiae.yaml \
+    --sae-model esmc-6b-2024-12-sae-layer60-k64-codebook65536 --top-k 100
+
 # Top-K SAE features (after setting sae.models in the config)
 och-annotate sae -c config/octopus_chierchiae.yaml
 
