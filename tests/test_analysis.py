@@ -36,3 +36,22 @@ def test_default_model_uses_first_stored():
     # no sae_model given -> read whichever model is stored
     s = sae_feature_activation(_df(), 10)
     assert list(s) == [0.9, 0.0, 0.0]
+
+
+def test_sae_feature_matrix_shapes_and_values():
+    from och_annotate.analysis import sae_feature_matrix
+
+    matrix, model = sae_feature_matrix(_df(), n_features=50)
+    assert model == "sae-x"
+    assert matrix.shape == (3, 50)
+    dense = matrix.toarray()
+    assert dense[0, 10] == 0.9 and dense[0, 30] == 0.1  # T1 top-K
+    assert dense[1, 20] == 0.7 and dense[1, 40] == 0.2  # T2 (JSON-string form)
+    assert dense[2].sum() == 0.0                        # T3 had no SAE
+
+
+def test_sae_feature_matrix_infers_width():
+    from och_annotate.analysis import sae_feature_matrix
+
+    matrix, _ = sae_feature_matrix(_df())  # width inferred from max index (40) -> 41
+    assert matrix.shape == (3, 41)

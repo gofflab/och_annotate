@@ -74,6 +74,83 @@ def sae_feature_activation(
     return df["sae_top_features"].apply(_activation)
 
 
+def _resolve_sae_model(df: pd.DataFrame, sae_model: str | None) -> str | None:
+    if sae_model:
+        return sae_model
+    for cell in df["sae_top_features"]:
+        if not cell:
+            continue
+        feats = json.loads(cell) if isinstance(cell, str) else cell
+        if feats:
+            return next(iter(feats.keys()))
+    return None
+
+
+def sae_feature_matrix(df: pd.DataFrame, sae_model: str | None = None, n_features: int | None = None):
+    """Sparse proteins × features SAE-activation matrix from the stored top-K.
+
+    Column ``j`` is SAE feature ``j`` (so var_names == feature ids). Returns
+    ``(scipy.sparse.csr_matrix, resolved_sae_model)``.
+    """
+    from scipy import sparse
+
+    if "sae_top_features" not in df.columns:
+        raise KeyError("No 'sae_top_features' column — embed/sae with SAE enabled first.")
+    model = _resolve_sae_model(df, sae_model)
+    rows: list[int] = []
+    cols: list[int] = []
+    vals: list[float] = []
+    max_idx = -1
+    for i, cell in enumerate(df["sae_top_features"]):
+        if not cell:
+            continue
+        feats = json.loads(cell) if isinstance(cell, str) else cell
+        entry = feats.get(model) if model else None
+        if not entry:
+            continue
+        for j, a in zip(entry.get("indices", []), entry.get("activations", [])):
+            rows.append(i)
+            cols.append(int(j))
+            vals.append(float(a))
+            max_idx = max(max_idx, int(j))
+    width = n_features if n_features is not None else max_idx + 1
+    matrix = sparse.csr_matrix((vals, (rows, cols)), shape=(len(df), max(width, 1)))
+    return matrix, model
+
+
+def build_anndata(df: pd.DataFrame, sae_model: str | None = None, n_features: int | None = None):
+    """Assemble an AnnData for Leiden clustering + SAE-feature enrichment.
+
+    ``X`` = sparse SAE activations (proteins × features), ``obsm['X_esmc']`` =
+    the dense ESMC embeddings (cluster on these), ``obs`` = metadata columns.
+    """
+    import anndata as ad
+
+    matrix, model = sae_feature_matrix(df, sae_model=sae_model, n_features=n_features)
+    obs = df[[c for c in df.columns if c not in ("embedding", "sae_top_features")]].copy()
+    obs = obs.reset_index(drop=True)
+    obs.index = obs.index.astype(str)
+    adata = ad.AnnData(X=matrix.astype("float32"), obs=obs)
+    adata.var_names = [str(j) for j in range(matrix.shape[1])]
+    adata.obsm["X_esmc"] = embedding_matrix(df)
+    if "transcript_id" in obs.columns and obs["transcript_id"].is_unique:
+        adata.obs_names = obs["transcript_id"].astype(str).values
+    adata.uns["sae_model"] = model
+    return adata
+
+
+def sae_enrichment(adata, groupby: str = "leiden", method: str = "wilcoxon", n: int | None = None):
+    """Per-cluster SAE-feature enrichment (marker-gene style). Returns a tidy DataFrame."""
+    import scanpy as sc
+
+    sc.tl.rank_genes_groups(adata, groupby=groupby, method=method)
+    table = sc.get.rank_genes_groups_df(adata, group=None)
+    table = table.rename(columns={"group": groupby, "names": "sae_feature"})
+    if n is not None:
+        table = table.groupby(groupby, observed=True).head(n).reset_index(drop=True)
+    return table
+
+
 def run_umap(
     df: pd.DataFrame,
     *,

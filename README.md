@@ -97,7 +97,18 @@ och-annotate umap -c config/octopus_chierchiae.yaml --sae-feature 8523 --out fea
 och-annotate fields -c config/octopus_chierchiae.yaml
 ```
 
-Or use `notebooks/explore_proteome.ipynb` for interactive exploration.
+Or use `notebooks/explore_proteome.ipynb` for interactive exploration, including
+**Leiden clustering + SAE-feature enrichment** (proteins as "cells", SAE features
+as "genes" — the scanpy marker-gene workflow):
+
+```bash
+pip install -e ".[cluster]"   # scanpy, leidenalg, igraph
+```
+
+Cluster on the ESMC embedding kNN graph (`build_anndata` → `sc.pp.neighbors(use_rep="X_esmc")`
+→ `sc.tl.leiden`), then `sae_enrichment(adata)` ranks the SAE features enriched in
+each cluster (Wilcoxon, FDR-corrected). Helpers live in `analysis.py`
+(`build_anndata`, `sae_feature_matrix`, `sae_enrichment`).
 
 ## Project layout
 
