@@ -28,12 +28,34 @@ class TopFeatures:
         return {"indices": self.indices, "activations": self.activations}
 
 
+# ESMC's accepted residue alphabet. Stop-codon markers ('*'), whitespace and any
+# other stray characters are stripped before a sequence is sent, otherwise the
+# server rejects the whole request with a 422 (and we'd burn a Biohub call).
+_VALID_RESIDUES = frozenset("ABCDEFGHIKLMNOPQRSTUVWXYZ-.:_|")
+
+
+def _sanitize_sequence(sequence: str) -> str:
+    """Uppercase, drop whitespace, and remove characters ESMC rejects (e.g. ``*``)."""
+    seq = "".join(sequence.split()).upper()
+    return "".join(c for c in seq if c in _VALID_RESIDUES)
+
+
 def _to_list(tensor) -> list[float]:
-    """torch.Tensor (or array-like) -> plain python float list."""
+    """torch.Tensor (or array-like) -> flat plain-python float list.
+
+    The server returns ``mean_embedding`` with leading singleton dims
+    (e.g. ``[1, 1, d]``); flatten so we always store a 1-D ``list[float]``.
+    """
     try:
-        return tensor.detach().cpu().float().tolist()
+        return tensor.detach().cpu().float().reshape(-1).tolist()
     except AttributeError:
-        return [float(x) for x in tensor]
+        flat: list[float] = []
+        for x in tensor:
+            if isinstance(x, (list, tuple)):
+                flat.extend(float(v) for v in x)
+            else:
+                flat.append(float(x))
+        return flat
 
 
 class ESMCEmbedder:
@@ -69,6 +91,7 @@ class ESMCEmbedder:
         """encode + logits for one sequence, with bounded retries."""
         self._ensure_client()
         ESMProtein = self._api["ESMProtein"]
+        sequence = _sanitize_sequence(sequence)
         last_err: Exception | None = None
         for attempt in range(self.config.run.max_attempts):
             try:
