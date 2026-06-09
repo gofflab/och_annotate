@@ -7,11 +7,13 @@ name = "och_annotate"
 version = "0.1.0"
 description = "Annotate proteomes with ESMC (Biohub) embeddings + SAE features and explore them via UMAP."
 readme = "README.md"
-requires-python = ">=3.10"
+# Biohub's esm fork requires Python 3.12.
+requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Goff Lab" }]
 dependencies = [
-    "esm>=3.1.0",          # Biohub/EvolutionaryScale ESMC SDK (pulls torch)
+    # Biohub ESMC SDK fork (pulls torch + a Biohub transformers fork). Requires 3.12.
+    "esm @ git+https://github.com/Biohub/esm.git@main",
     "requests>=2.31",      # Baserow REST client
     "numpy>=1.24",
     "pandas>=2.0",
