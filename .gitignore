@@ -223,3 +223,7 @@ data/cache/
 *.parquet
 *.npz
 .env.local
+
+# Generated analysis outputs
+umap*.html
+*.html
