@@ -19,13 +19,46 @@ from och_annotate.config import Config
 
 @dataclass
 class TopFeatures:
-    """Top-K SAE features for one protein from one SAE model."""
+    """Top-K SAE features for one protein from one SAE model.
+
+    ``regions`` (optional) holds one ``[start, end, peak]`` residue span per
+    top feature, aligned with ``indices`` — present only when residue-region
+    extraction is enabled.
+    """
 
     indices: list[int]
     activations: list[float]
+    regions: list[list[int]] | None = None
 
-    def as_dict(self) -> dict[str, list[float] | list[int]]:
-        return {"indices": self.indices, "activations": self.activations}
+    def as_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {"indices": self.indices, "activations": self.activations}
+        if self.regions is not None:
+            out["regions"] = self.regions
+        return out
+
+
+def _residue_regions(acts2d, indices: list[int], threshold_frac: float) -> list[list[int]]:
+    """Per-feature ``[start, end, peak]`` residue spans from a ``[L, F]`` matrix.
+
+    ``acts2d`` is the per-residue activation matrix (BOS/EOS already dropped, so
+    residue 0 is the first amino acid). For each feature in ``indices``: ``peak``
+    is the argmax residue, and the span is the first/last residue whose activation
+    reaches ``threshold_frac`` of that peak. Positions are 0-based.
+    """
+    import numpy as np
+
+    acts = np.asarray(acts2d, dtype=float)
+    regions: list[list[int]] = []
+    for idx in indices:
+        col = acts[:, idx]
+        peak = int(col.argmax())
+        peak_val = float(col[peak])
+        if peak_val <= 0:
+            regions.append([peak, peak, peak])
+            continue
+        active = np.where(col >= threshold_frac * peak_val)[0]
+        regions.append([int(active.min()), int(active.max()), peak])
+    return regions
 
 
 # ESMC's accepted residue alphabet. Stop-codon markers ('*'), whitespace and any
@@ -300,14 +333,26 @@ class ESMCEmbedder:
             acts = acts.to_dense()
         if acts.dim() == 3:  # [1, L, F] -> [L, F]
             acts = acts[0]
+        per_residue = None
         if acts.dim() == 2:  # [L, F] -> drop BOS/EOS, pool over residues
             acts = acts[1:-1]
+            per_residue = acts  # keep for optional residue-region extraction
             pooled = acts.max(dim=0).values if self.config.sae.pooling == "max" else acts.mean(dim=0)
         else:
             pooled = acts
         k = min(self.config.sae.top_k, pooled.numel())
         top = torch.topk(pooled, k)
+        indices = [int(i) for i in top.indices.tolist()]
+
+        regions = None
+        if getattr(self.config.sae, "residue_regions", False) and per_residue is not None:
+            regions = _residue_regions(
+                per_residue.detach().cpu().float().numpy(),
+                indices,
+                self.config.sae.region_threshold,
+            )
         return TopFeatures(
-            indices=[int(i) for i in top.indices.tolist()],
+            indices=indices,
             activations=[float(v) for v in top.values.tolist()],
+            regions=regions,
         )

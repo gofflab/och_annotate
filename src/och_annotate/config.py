@@ -46,6 +46,12 @@ class SAEConfig:
     normalize_features: bool = True
     top_k: int = 64
     pooling: str = "max"
+    # When true, also store per-feature [start, end, peak] residue spans for the
+    # top-K features (computed from the same per-residue activations the API
+    # already returns — no extra Biohub cost; needs a re-run to populate a cache).
+    residue_regions: bool = False
+    # A feature's span = residues with activation >= region_threshold * its peak.
+    region_threshold: float = 0.5
 
 
 @dataclass

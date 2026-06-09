@@ -47,6 +47,12 @@ sae:
   normalize_features: true
   top_k: 64                      # high-scoring features kept per protein
   pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"
+  # Per-feature [start, end, peak] residue spans, from the same per-residue
+  # activations the API already returns (no extra Biohub cost). Off by default;
+  # turning it on needs a re-run to populate the cache (set run.skip_existing
+  # false, or clear the sae column, so existing rows are reprocessed).
+  residue_regions: false
+  region_threshold: 0.5          # span = residues with activation >= 0.5 * feature peak
 
 run:
   batch_size: 32                 # proteins per checkpoint chunk (small = less lost on a stall)

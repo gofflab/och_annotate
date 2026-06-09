@@ -117,6 +117,59 @@ def sae_feature_activation(
     return df["sae_top_features"].apply(_activation)
 
 
+def feature_residue_region(sae_cell, feature_index: int, sae_model: str | None = None):
+    """Return ``[start, end, peak]`` residue span for a feature in one protein.
+
+    Reads the optional ``regions`` array stored alongside ``indices``/``activations``
+    in ``sae_top_features``. Returns ``None`` when residue regions weren't computed
+    (the cache predates a per-residue SAE run), so callers degrade gracefully.
+    """
+    if not sae_cell:
+        return None
+    feats = json.loads(sae_cell) if isinstance(sae_cell, str) else sae_cell
+    entries = [feats.get(sae_model)] if sae_model else list(feats.values())
+    for entry in entries:
+        if not entry or "regions" not in entry:
+            continue
+        indices = list(entry.get("indices", []))
+        if feature_index in indices:
+            return list(entry["regions"][indices.index(feature_index)])
+    return None
+
+
+def candidate_feature_report(
+    sae_cell, *, labels: dict[int, str] | None = None, sae_model: str | None = None, n: int = 10
+) -> pd.DataFrame:
+    """Per-candidate feature report: top-``n`` SAE features for one protein.
+
+    Columns: ``rank, sae_feature, label, norm_activation, residues`` — ranked by
+    the stored (already normalized) activation. ``residues`` is
+    ``"<start>-<end> (peak <p>)"`` when residue regions are present, else ``None``
+    (so it lights up automatically once a per-residue SAE run populates them).
+    """
+    feats = json.loads(sae_cell) if isinstance(sae_cell, str) else (sae_cell or {})
+    model = sae_model or next(iter(feats), None)
+    entry = feats.get(model) if model else None
+    columns = ["rank", "sae_feature", "label", "norm_activation", "residues"]
+    if not entry:
+        return pd.DataFrame(columns=columns)
+
+    labels = labels or {}
+    indices = entry.get("indices", [])
+    activations = entry.get("activations", [])
+    rows = []
+    for rank, (fi, act) in enumerate(zip(indices[:n], activations[:n]), start=1):
+        region = feature_residue_region(feats, int(fi), model)
+        rows.append({
+            "rank": rank,
+            "sae_feature": int(fi),
+            "label": labels.get(int(fi), ""),
+            "norm_activation": float(act),
+            "residues": f"{region[0]}-{region[1]} (peak {region[2]})" if region else None,
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _resolve_sae_model(df: pd.DataFrame, sae_model: str | None) -> str | None:
     if sae_model:
         return sae_model
