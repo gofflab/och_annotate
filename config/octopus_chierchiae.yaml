@@ -35,9 +35,13 @@ esmc:
   request_timeout: 300
 
 sae:
-  # SAE is a separate, opt-in downstream step. Leave models empty to skip until
-  # you have the exact SAE identifier(s) available for esmc-6b on Biohub.
-  models: []                     # e.g. ["esmc-6b-sae-..."]
+  # When models is non-empty, `embed` computes SAE features in the SAME Biohub
+  # call as the embedding (no extra token cost) and writes them to the `sae`
+  # output column. The two SAEs published for esmc-6b-2024-12 (layer 60, k=64):
+  #   - esmc-6b-2024-12-sae-layer60-k64-codebook16384  (16k features; Atlas std)
+  #   - esmc-6b-2024-12-sae-layer60-k64-codebook65536  (65k features; finer)
+  models:
+    - "esmc-6b-2024-12-sae-layer60-k64-codebook16384"
   normalize_features: true
   top_k: 64                      # high-scoring features kept per protein
   pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"

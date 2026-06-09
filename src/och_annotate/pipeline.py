@@ -47,16 +47,34 @@ class EmbeddingPipeline:
         self.embedder = ESMCEmbedder(config)
 
     # ---- selection ---------------------------------------------------------
+    @property
+    def _sae_enabled(self) -> bool:
+        return bool(self.config.sae.models)
+
+    def _has_embedding(self, row: dict, sequence: str) -> bool:
+        key = row[self.config.baserow.id_column]
+        if self.config.run.use_cache and self.cache.is_fresh(key, sequence):
+            return True
+        return bool(row.get(self.config.baserow.output_columns["embedding"]))
+
+    def _has_sae(self, row: dict) -> bool:
+        key = row[self.config.baserow.id_column]
+        if self.config.run.use_cache:
+            rec = self.cache.get(key)
+            if rec and rec.get("sae_top_features"):
+                return True
+        return bool(row.get(self.config.baserow.output_columns["sae"]))
+
     def _needs_embedding(self, row: dict, sequence: str) -> bool:
         if not self.config.run.skip_existing:
             return True
-        key = row[self.config.baserow.id_column]
-        if self.config.run.use_cache and self.cache.is_fresh(key, sequence):
-            return False
-        emb_col = self.config.baserow.output_columns["embedding"]
-        if row.get(emb_col):  # already populated in Baserow
-            return False
-        return True
+        if not self._has_embedding(row, sequence):
+            return True
+        # When SAE is enabled a row also needs processing if it lacks SAE
+        # features (e.g. it was embedded before SAE was turned on).
+        if self._sae_enabled and not self._has_sae(row):
+            return True
+        return False
 
     def _fetch_rows(self) -> list[dict]:
         bw = self.config.baserow
@@ -65,6 +83,8 @@ class EmbeddingPipeline:
             bw.id_column,
             bw.output_columns["embedding"],
         }
+        if self._sae_enabled:
+            wanted.add(bw.output_columns["sae"])
         rows = self.baserow.fetch_rows(bw.table_id)
         # keep the Baserow integer row id (needed for write-back) + wanted columns
         return [{"id": r["id"], **{k: r.get(k) for k in wanted}} for r in rows]
@@ -76,9 +96,12 @@ class EmbeddingPipeline:
         summary = RunSummary()
 
         if cfg.run.write_baserow and not dry_run:
+            output_keys = ["embedding", "model", "embedded_at"]
+            if self._sae_enabled:
+                output_keys.append("sae")
             created = self.baserow.ensure_fields(
                 cfg.baserow.table_id,
-                [cfg.baserow.output_columns[k] for k in ("embedding", "model", "embedded_at")],
+                [cfg.baserow.output_columns[k] for k in output_keys],
             )
             created_names = [n for n, did in created.items() if did]
             if created_names:
@@ -121,6 +144,7 @@ class EmbeddingPipeline:
         """
         cfg = self.config
         out = cfg.baserow.output_columns
+        sae_on = self._sae_enabled
         chunk_size = max(cfg.run.batch_size, 1)
         total = len(pending)
         processed = 0
@@ -128,38 +152,53 @@ class EmbeddingPipeline:
         for start in range(0, total, chunk_size):
             chunk = pending[start : start + chunk_size]
             sequences = [row[cfg.baserow.sequence_column] for row in chunk]
-            results = self.embedder.embed_many(sequences)
+            if sae_on:
+                results = self.embedder.embed_and_sae_many(sequences)
+            else:
+                results = self.embedder.embed_many(sequences)
 
             stamp = _now_iso()
             batch: list[dict] = []
             for row, result in zip(chunk, results):
                 key = row[cfg.baserow.id_column]
-                if not isinstance(result, list):  # ESMProteinError / Exception
-                    summary.failed += 1
-                    summary.errors.append(f"{key}: {result}")
-                    continue
-                vector = result
+                # Normalise the per-protein result to (vector, sae_feats).
+                if sae_on:
+                    if not isinstance(result, dict):  # ESMProteinError / Exception
+                        summary.failed += 1
+                        summary.errors.append(f"{key}: {result}")
+                        continue
+                    vector = result["embedding"]
+                    sae_feats = result["sae"]
+                else:
+                    if not isinstance(result, list):  # ESMProteinError / Exception
+                        summary.failed += 1
+                        summary.errors.append(f"{key}: {result}")
+                        continue
+                    vector = result
+                    sae_feats = None
+
                 if cfg.run.use_cache:
                     meta = {k: row.get(k) for k in cfg.baserow.metadata_columns}
-                    self.cache.upsert(
-                        key,
-                        {
-                            **meta,
-                            "seq_hash": sequence_hash(row[cfg.baserow.sequence_column]),
-                            "model": cfg.esmc.model,
-                            "embedded_at": stamp,
-                            "embedding": vector,
-                        },
-                    )
+                    record = {
+                        **meta,
+                        "seq_hash": sequence_hash(row[cfg.baserow.sequence_column]),
+                        "model": cfg.esmc.model,
+                        "embedded_at": stamp,
+                        "embedding": vector,
+                    }
+                    if sae_feats is not None:
+                        record["sae_top_features"] = sae_feats
+                    self.cache.upsert(key, record)
                 if cfg.run.write_baserow:
-                    batch.append(
-                        {
-                            "id": row["id"],
-                            out["embedding"]: json.dumps(vector),
-                            out["model"]: cfg.esmc.model,
-                            out["embedded_at"]: stamp,
-                        }
-                    )
+                    item = {
+                        "id": row["id"],
+                        out["embedding"]: json.dumps(vector),
+                        out["model"]: cfg.esmc.model,
+                        out["embedded_at"]: stamp,
+                    }
+                    if sae_feats is not None:
+                        item[out["sae"]] = json.dumps(sae_feats)
+                    batch.append(item)
                 summary.embedded += 1
 
             # Checkpoint this chunk before moving on.

@@ -34,12 +34,20 @@ class FakeEmbedder:
     def embed_many(self, sequences):
         return [self.embed_one(s) for s in sequences]
 
+    def embed_and_sae_many(self, sequences):
+        return [
+            {"embedding": self.embed_one(s),
+             "sae": {"sae-model": {"indices": [1, 2], "activations": [0.9, 0.8]}}}
+            for s in sequences
+        ]
 
-def _make_pipeline(tmp_path, rows):
+
+def _make_pipeline(tmp_path, rows, *, sae_models=None):
     cfg = load_config(CONFIG)
     cfg.baserow_token = "x"
     cfg.biohub_token = "y"
     cfg.run.cache_dir = str(tmp_path)
+    cfg.sae.models = sae_models or []  # default: embedding-only
     pipe = EmbeddingPipeline(cfg)
     pipe.baserow = FakeBaserow(rows)
     pipe.embedder = FakeEmbedder()
@@ -86,3 +94,36 @@ def test_embed_writes_cache_and_baserow(tmp_path):
     assert summary2.embedded == 0
     assert summary2.skipped_existing == 1
     assert pipe2.embedder.calls == 0
+
+
+def test_embed_with_sae_writes_both(tmp_path):
+    rows = [
+        {"id": 1, "transcript_id": "T1", "protein_sequence": "MKTAYIA", "esmc_embedding": None,
+         "sae_top_features": None, "gene_id": "G1", "chromosome": "1", "start": 1, "end": 2,
+         "strand": "+", "Ochierchiae_name": "n1"},
+    ]
+    pipe, cfg = _make_pipeline(tmp_path, rows, sae_models=["sae-model"])
+    summary = pipe.run()
+    assert summary.embedded == 1
+    item = pipe.baserow.updated[0]
+    assert cfg.baserow.output_columns["embedding"] in item
+    assert cfg.baserow.output_columns["sae"] in item  # SAE written in the same pass
+    # SAE column is ensured alongside the embedding columns
+    assert cfg.baserow.output_columns["sae"] in pipe.baserow.ensured
+    # second run is a no-op: both embedding and SAE present
+    pipe2, _ = _make_pipeline(tmp_path, rows, sae_models=["sae-model"])
+    summary2 = pipe2.run()
+    assert summary2.embedded == 0
+    assert summary2.skipped_existing == 1
+
+
+def test_embedded_without_sae_is_reprocessed_when_sae_enabled(tmp_path):
+    # A row already embedded (no SAE) must be reprocessed once SAE is turned on.
+    rows = [
+        {"id": 1, "transcript_id": "T1", "protein_sequence": "MKTAYIA",
+         "esmc_embedding": "[0.1]", "sae_top_features": None},
+    ]
+    pipe, _ = _make_pipeline(tmp_path, rows, sae_models=["sae-model"])
+    summary = pipe.run(dry_run=True)
+    assert summary.to_embed == 1
+    assert summary.skipped_existing == 0

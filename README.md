@@ -15,8 +15,13 @@ YAML file.
    API, storing one **mean-pooled vector per protein**.
 3. **Persist** the embedding back to Baserow (new columns) **and** a local
    parquet cache, so re-runs and analysis never re-spend Biohub tokens.
-4. **SAE** (separate, opt-in step): store the top-K high-scoring SAE features per
-   protein once you supply the SAE model id(s) for ESMC.
+4. **SAE** (opt-in): when `sae.models` is set, the top-K high-scoring SAE
+   features per protein are computed in the **same** Biohub call as the
+   embedding (no extra token cost) and written to the `sae` column. The
+   published SAEs for `esmc-6b-2024-12` are
+   `esmc-6b-2024-12-sae-layer60-k64-codebook16384` (16k features, used in the
+   Atlas) and `...-codebook65536` (65k, finer). The standalone `sae` command
+   remains for back-filling SAE onto proteins embedded before it was enabled.
 5. **Explore** the whole proteome with UMAP + interactive plots, colored by any
    metadata column.
 

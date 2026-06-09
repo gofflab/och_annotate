@@ -160,6 +160,59 @@ class ESMCEmbedder:
         with batch_executor(max_attempts=self.config.run.max_attempts) as executor:
             return executor.execute_batch(_one, sequence=list(sequences))
 
+    def embed_and_sae_many(
+        self, sequences: list[str]
+    ) -> list[dict[str, object] | Exception]:
+        """Mean-pool embedding **and** top-K SAE features in a single pass.
+
+        One ``logits`` call per protein returns both the mean embedding and the
+        SAE activations, so getting both costs no more Biohub calls than the
+        embedding alone. Returns one entry per input, in order: a dict
+        ``{"embedding": list[float], "sae": {sae_model: {indices, activations}}}``
+        on success, or the ``Exception`` for sequences that failed after retries.
+        """
+        self._ensure_client()
+        from esm.sdk import batch_executor  # noqa: WPS433 (lazy heavy import)
+
+        ESMProtein = self._api["ESMProtein"]
+        ESMProteinError = self._api["ESMProteinError"]
+        LogitsConfig = self._api["LogitsConfig"]
+        SAEConfig = self._api["SAEConfig"]
+        sae_cfg = self.config.sae
+        combined_cfg = LogitsConfig(
+            sequence=True,
+            return_mean_embedding=True,
+            sae_config=SAEConfig(
+                models=list(sae_cfg.models),
+                normalize_features=sae_cfg.normalize_features,
+            ),
+        )
+
+        def _one(sequence: str):
+            tensor = self._client.encode(ESMProtein(sequence=_sanitize_sequence(sequence)))
+            if isinstance(tensor, ESMProteinError):
+                return tensor
+            out = self._client.logits(tensor, combined_cfg)
+            if isinstance(out, ESMProteinError):
+                return out
+            if out.mean_embedding is not None:
+                embedding = _to_list(out.mean_embedding)
+            else:
+                emb_out = self._client.logits(
+                    tensor, LogitsConfig(sequence=True, return_embeddings=True)
+                )
+                if isinstance(emb_out, ESMProteinError):
+                    return emb_out
+                embedding = _to_list(emb_out.embeddings[0, 1:-1, :].mean(dim=0))
+            sae = {
+                model_name: self._top_features(acts).as_dict()
+                for model_name, acts in (out.sae_outputs or {}).items()
+            }
+            return {"embedding": embedding, "sae": sae}
+
+        with batch_executor(max_attempts=self.config.run.max_attempts) as executor:
+            return executor.execute_batch(_one, sequence=list(sequences))
+
     def sae_one(self, sequence: str) -> dict[str, TopFeatures]:
         """Return top-K SAE features per configured SAE model for one sequence."""
         self._ensure_client()
@@ -186,6 +239,8 @@ class ESMCEmbedder:
         import torch  # local import; only needed in the SAE path
 
         acts = activations
+        if acts.is_sparse:  # SAE activations come back as a sparse COO tensor
+            acts = acts.to_dense()
         if acts.dim() == 3:  # [1, L, F] -> [L, F]
             acts = acts[0]
         if acts.dim() == 2:  # [L, F] -> drop BOS/EOS, pool over residues
