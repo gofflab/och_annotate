@@ -113,6 +113,25 @@ notebooks/explore_proteome.ipynb
 tests/                        # mocked unit tests (no live API / no torch needed)
 ```
 
+## Running at scale (Biohub daily credit limit)
+
+Biohub bills `logits` at `seq_len` tokens (1 credit = 10,000 tokens); `encode` is
+free. An embedding and a **combined embedding+SAE** call cost the *same* (one
+`logits` pass), so always run them together — splitting them doubles the cost.
+
+For the *O. chierchiae* proteome (~35.8k proteins, mean 463 aa) the whole
+embed+SAE job is **~1,657 credits, one-time**. On a 100-credit/day account that's
+~16 days of daily resumes (~2,100 proteins/day); with a higher daily limit it's
+hours.
+
+The pipeline is built for this: each run resumes (skipping anything already done
+in Baserow) and **stops early the moment the daily credit limit is hit**, so a
+daily run is fast and safe. `.github/workflows/daily-embed.yml` runs it on a
+daily cron — add `BASEROW_TOKEN` and `BIOHUB_API_TOKEN` as repository secrets,
+and adjust the cron time to land just after your quota resets. Trigger it
+manually (Actions → *Daily ESMC embed* → *Run workflow*) right after a limit bump
+to drain the backlog at once.
+
 ## Adding another proteome
 
 Copy `config/octopus_chierchiae.yaml`, change `name`, the Baserow

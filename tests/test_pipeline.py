@@ -117,6 +117,35 @@ def test_embed_with_sae_writes_both(tmp_path):
     assert summary2.skipped_existing == 1
 
 
+class CreditLimitedEmbedder:
+    """Embeds the first chunk, then fails everything with the daily-limit error."""
+
+    def __init__(self):
+        self.chunks = 0
+
+    def embed_many(self, sequences):
+        self.chunks += 1
+        if self.chunks == 1:
+            return [[1.0, 2.0, 3.0] for _ in sequences]
+        return [RuntimeError("(429, 'exceeded your daily credit limit of 100 credits')")
+                for _ in sequences]
+
+
+def test_stops_early_on_daily_credit_limit(tmp_path):
+    rows = [
+        {"id": i, "transcript_id": f"T{i}", "protein_sequence": "MKTAYIA" * 3,
+         "esmc_embedding": None}
+        for i in range(10)
+    ]
+    pipe, cfg = _make_pipeline(tmp_path, rows)
+    cfg.run.batch_size = 4  # 3 chunks: 1 ok, then credit-blocked
+    pipe.embedder = CreditLimitedEmbedder()
+    summary = pipe.run()
+    assert summary.stopped_early is True
+    assert summary.embedded == 4          # only the first chunk landed
+    assert pipe.embedder.chunks == 2      # stopped after the first blocked chunk
+
+
 def test_embedded_without_sae_is_reprocessed_when_sae_enabled(tmp_path):
     # A row already embedded (no SAE) must be reprocessed once SAE is turned on.
     rows = [

@@ -27,6 +27,7 @@ class RunSummary:
     skipped_empty: int = 0
     skipped_too_long: int = 0
     failed: int = 0
+    stopped_early: bool = False
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -35,6 +36,12 @@ class RunSummary:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_credit_limited(err: object) -> bool:
+    """True if a failure is the Biohub daily credit-limit / rate cap (HTTP 429)."""
+    msg = str(err).lower()
+    return "credit limit" in msg or "usage cap" in msg
 
 
 class EmbeddingPipeline:
@@ -159,6 +166,8 @@ class EmbeddingPipeline:
 
             stamp = _now_iso()
             batch: list[dict] = []
+            chunk_ok = 0
+            chunk_credit_blocked = 0
             for row, result in zip(chunk, results):
                 key = row[cfg.baserow.id_column]
                 # Normalise the per-protein result to (vector, sae_feats).
@@ -166,6 +175,7 @@ class EmbeddingPipeline:
                     if not isinstance(result, dict):  # ESMProteinError / Exception
                         summary.failed += 1
                         summary.errors.append(f"{key}: {result}")
+                        chunk_credit_blocked += _is_credit_limited(result)
                         continue
                     vector = result["embedding"]
                     sae_feats = result["sae"]
@@ -173,6 +183,7 @@ class EmbeddingPipeline:
                     if not isinstance(result, list):  # ESMProteinError / Exception
                         summary.failed += 1
                         summary.errors.append(f"{key}: {result}")
+                        chunk_credit_blocked += _is_credit_limited(result)
                         continue
                     vector = result
                     sae_feats = None
@@ -200,6 +211,7 @@ class EmbeddingPipeline:
                         item[out["sae"]] = json.dumps(sae_feats)
                     batch.append(item)
                 summary.embedded += 1
+                chunk_ok += 1
 
             # Checkpoint this chunk before moving on.
             if cfg.run.use_cache:
@@ -212,3 +224,14 @@ class EmbeddingPipeline:
                 f"  checkpoint {processed}/{total} "
                 f"(embedded={summary.embedded} failed={summary.failed})"
             )
+
+            # Daily Biohub credit limit reached: every remaining call will fail
+            # the same way, so stop now instead of churning thousands of doomed
+            # chunks. The run is resumable — tomorrow picks up where this left off.
+            if chunk_ok == 0 and chunk_credit_blocked:
+                summary.stopped_early = True
+                print(
+                    "  Biohub daily credit limit reached — stopping early. "
+                    "Re-run after the quota resets to continue."
+                )
+                break
