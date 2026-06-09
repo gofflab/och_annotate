@@ -229,4 +229,5 @@ umap*.html
 *.html
 
 # Cached SAE feature descriptions (regenerable from the ESM Atlas API)
-data/sae_feature_*
+data/*.parquet
+data/*.csv
