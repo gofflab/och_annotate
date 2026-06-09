@@ -88,6 +88,31 @@ class ESMCEmbedder:
         )
 
     # ---- helpers -----------------------------------------------------------
+    def _batch_executor(self):
+        """Forge batch executor honoring ``run.max_workers`` (default SDK = 64).
+
+        Fewer workers keeps a steadier request rate (the executor's AIMD limiter
+        starts at this concurrency), which — together with a tight
+        ``esmc.request_timeout`` — stops a few slow/stuck requests from freezing
+        a whole chunk.
+        """
+        from esm.sdk import batch_executor  # ensures esm.sdk is initialised first
+
+        max_workers = getattr(self.config.run, "max_workers", None)
+        if max_workers:
+            try:
+                # Re-exported by esm.sdk; importing it here lets us set concurrency
+                # (the public batch_executor() hardcodes 64 workers).
+                from esm.sdk import ForgeBatchExecutor
+
+                return ForgeBatchExecutor(
+                    max_attempts=self.config.run.max_attempts,
+                    max_workers=min(max_workers, 64),
+                )
+            except Exception:  # pragma: no cover - fall back to SDK default
+                pass
+        return batch_executor(max_attempts=self.config.run.max_attempts)
+
     def _logits(self, sequence: str, logits_config):
         """encode + logits for one sequence, with bounded retries."""
         self._ensure_client()
@@ -134,8 +159,6 @@ class ESMCEmbedder:
         the whole proteome embeds in minutes instead of hours.
         """
         self._ensure_client()
-        from esm.sdk import batch_executor  # noqa: WPS433 (lazy heavy import)
-
         ESMProtein = self._api["ESMProtein"]
         ESMProteinError = self._api["ESMProteinError"]
         LogitsConfig = self._api["LogitsConfig"]
@@ -157,7 +180,7 @@ class ESMCEmbedder:
                 return out
             return _to_list(out.embeddings[0, 1:-1, :].mean(dim=0))
 
-        with batch_executor(max_attempts=self.config.run.max_attempts) as executor:
+        with self._batch_executor() as executor:
             return executor.execute_batch(_one, sequence=list(sequences))
 
     def embed_and_sae_many(
@@ -172,8 +195,6 @@ class ESMCEmbedder:
         on success, or the ``Exception`` for sequences that failed after retries.
         """
         self._ensure_client()
-        from esm.sdk import batch_executor  # noqa: WPS433 (lazy heavy import)
-
         ESMProtein = self._api["ESMProtein"]
         ESMProteinError = self._api["ESMProteinError"]
         LogitsConfig = self._api["LogitsConfig"]
@@ -210,7 +231,43 @@ class ESMCEmbedder:
             }
             return {"embedding": embedding, "sae": sae}
 
-        with batch_executor(max_attempts=self.config.run.max_attempts) as executor:
+        with self._batch_executor() as executor:
+            return executor.execute_batch(_one, sequence=list(sequences))
+
+    def sae_many(self, sequences: list[str]) -> list[dict[str, object] | Exception]:
+        """Top-K SAE features for many sequences concurrently (no embedding).
+
+        Used by the standalone ``sae`` back-fill step. Returns one entry per
+        input: ``{sae_model: {indices, activations}}`` on success, or the
+        ``Exception`` for sequences that failed after retries.
+        """
+        self._ensure_client()
+        ESMProtein = self._api["ESMProtein"]
+        ESMProteinError = self._api["ESMProteinError"]
+        LogitsConfig = self._api["LogitsConfig"]
+        SAEConfig = self._api["SAEConfig"]
+        sae_cfg = self.config.sae
+        cfg = LogitsConfig(
+            sequence=True,
+            sae_config=SAEConfig(
+                models=list(sae_cfg.models),
+                normalize_features=sae_cfg.normalize_features,
+            ),
+        )
+
+        def _one(sequence: str):
+            tensor = self._client.encode(ESMProtein(sequence=_sanitize_sequence(sequence)))
+            if isinstance(tensor, ESMProteinError):
+                return tensor
+            out = self._client.logits(tensor, cfg)
+            if isinstance(out, ESMProteinError):
+                return out
+            return {
+                model_name: self._top_features(acts).as_dict()
+                for model_name, acts in (out.sae_outputs or {}).items()
+            }
+
+        with self._batch_executor() as executor:
             return executor.execute_batch(_one, sequence=list(sequences))
 
     def sae_one(self, sequence: str) -> dict[str, TopFeatures]:

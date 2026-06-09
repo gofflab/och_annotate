@@ -27,19 +27,23 @@ def _summary(title: str, data: dict) -> None:
         print(f"  {key}: {value}")
 
 
-def _apply_sae_overrides(cfg, args) -> None:
-    """Let CLI flags override the SAE settings from the config YAML."""
+def _apply_overrides(cfg, args) -> None:
+    """Let CLI flags override SAE / run settings from the config YAML."""
     if getattr(args, "top_k", None) is not None:
         cfg.sae.top_k = args.top_k
     if getattr(args, "sae_model", None):
         cfg.sae.models = list(args.sae_model)
+    if getattr(args, "no_sae", False):  # embed-only variant: skip SAE this run
+        cfg.sae.models = []
+    if getattr(args, "max_workers", None) is not None:
+        cfg.run.max_workers = args.max_workers
 
 
 def cmd_embed(args) -> int:
     from och_annotate.pipeline import EmbeddingPipeline
 
     cfg = load_config(args.config)
-    _apply_sae_overrides(cfg, args)
+    _apply_overrides(cfg, args)
     pipeline = EmbeddingPipeline(cfg)
     summary = pipeline.run(dry_run=args.dry_run, limit=args.limit)
     _summary("Embedding summary" + (" (dry run)" if args.dry_run else ""), summary.as_dict())
@@ -50,7 +54,7 @@ def cmd_sae(args) -> int:
     from och_annotate.sae import SAEPipeline
 
     cfg = load_config(args.config)
-    _apply_sae_overrides(cfg, args)
+    _apply_overrides(cfg, args)
     summary = SAEPipeline(cfg).run(limit=args.limit)
     _summary("SAE summary", summary.as_dict())
     return 0
@@ -104,11 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Override sae.top_k: number of high-scoring SAE features kept per protein")
         p.add_argument("--sae-model", action="append", default=None, metavar="ID",
                        help="Override sae.models (repeatable), e.g. esmc-6b-2024-12-sae-layer60-k64-codebook16384")
+        p.add_argument("--max-workers", type=int, default=None,
+                       help="Override run.max_workers: concurrent Biohub requests (<=64)")
 
     p_embed = sub.add_parser("embed", help="Fetch sequences and write ESMC embeddings (+SAE if configured)")
     add_config(p_embed)
     p_embed.add_argument("--dry-run", action="store_true", help="Report counts without calling Biohub")
     p_embed.add_argument("--limit", type=int, default=None, help="Cap number of proteins embedded")
+    p_embed.add_argument("--no-sae", action="store_true",
+                         help="Embed-only: skip SAE even if sae.models is configured (cheaper run)")
     add_sae_overrides(p_embed)
     p_embed.set_defaults(func=cmd_embed)
 

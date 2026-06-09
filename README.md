@@ -30,9 +30,14 @@ YAML file.
 Biohub calls are the limiting resource, so the pipeline:
 
 - only embeds proteins **missing** an embedding (checks both cache and Baserow);
-- **checkpoints** to cache every batch — an interrupted run resumes for free;
+- **checkpoints** to cache + Baserow every chunk (`run.batch_size`, default 32) —
+  an interrupted or stalled run resumes for free and loses at most one chunk;
+- runs requests concurrently but bounded (`run.max_workers`, default 16) with a
+  tight per-request timeout (`esmc.request_timeout`), so a few slow/stuck
+  requests can't freeze the run;
 - offers `--dry-run` to report exactly how many proteins a real run would embed;
-- offers `--limit N` to cap a first trial run.
+- offers `--limit N` to cap a first trial run, and `--no-sae` for a cheaper
+  embed-only pass.
 
 ## Setup
 
@@ -67,8 +72,15 @@ och-annotate embed -c config/octopus_chierchiae.yaml
 # Try a handful first
 och-annotate embed -c config/octopus_chierchiae.yaml --limit 10
 
-# Override SAE settings per run (no need to edit the YAML)
+# Embed-only variant (cheaper): skip SAE even if it's configured, then explore,
+# then back-fill SAE later when the Biohub budget allows.
+och-annotate embed -c config/octopus_chierchiae.yaml --no-sae
+och-annotate umap  -c config/octopus_chierchiae.yaml --color chromosome --out umap.html
+och-annotate sae   -c config/octopus_chierchiae.yaml      # back-fill SAE onto embedded proteins
+
+# Override SAE / concurrency settings per run (no need to edit the YAML)
 och-annotate embed -c config/octopus_chierchiae.yaml --top-k 128
+och-annotate embed -c config/octopus_chierchiae.yaml --max-workers 8
 och-annotate embed -c config/octopus_chierchiae.yaml \
     --sae-model esmc-6b-2024-12-sae-layer60-k64-codebook65536 --top-k 100
 

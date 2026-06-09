@@ -32,7 +32,7 @@ esmc:
   # Server-side mean pooling -> one vector per protein (cheap transfer, ideal for UMAP).
   pooling: "mean"                # "mean" (return_mean_embedding) or "residue_mean" (local)
   max_sequence_length: 2048      # ESMC limit; longer sequences are skipped + reported
-  request_timeout: 300
+  request_timeout: 120           # per-request HTTP timeout; a stuck read aborts + retries
 
 sae:
   # When models is non-empty, `embed` computes SAE features in the SAME Biohub
@@ -47,7 +47,8 @@ sae:
   pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"
 
 run:
-  batch_size: 256                # proteins per concurrent Biohub batch + checkpoint chunk
+  batch_size: 32                 # proteins per checkpoint chunk (small = less lost on a stall)
+  max_workers: 16                # concurrent Biohub requests (<=64); steadier than a 64-wide burst
   max_attempts: 10               # retry attempts inside batch_executor
   cache_dir: ".cache/octopus_chierchiae"
   write_baserow: true            # write results back to the Transcripts table

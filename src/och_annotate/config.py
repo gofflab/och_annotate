@@ -52,6 +52,7 @@ class SAEConfig:
 class RunConfig:
     batch_size: int = 16
     max_attempts: int = 10
+    max_workers: int = 16  # concurrent Biohub requests (<=64); lower is gentler/steadier
     cache_dir: str = ".cache"
     write_baserow: bool = True
     use_cache: bool = True

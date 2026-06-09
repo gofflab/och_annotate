@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from tqdm import tqdm
-
 from och_annotate.baserow import BaserowClient
 from och_annotate.cache import EmbeddingCache
 from och_annotate.config import Config
@@ -77,34 +75,39 @@ class SAEPipeline:
         if limit is not None:
             pending = pending[:limit]
 
-        batch: list[dict] = []
+        # Concurrent, chunked + checkpointed (same hardening as the embed step).
+        chunk_size = max(cfg.run.batch_size, 1)
+        total = len(pending)
+        processed = 0
+        for start in range(0, total, chunk_size):
+            chunk = pending[start : start + chunk_size]
+            sequences = [row[bw.sequence_column] for row in chunk]
+            results = self.embedder.sae_many(sequences)
 
-        def flush() -> None:
+            batch: list[dict] = []
+            for row, result in zip(chunk, results):
+                key = row[bw.id_column]
+                if not isinstance(result, dict):  # ESMProteinError / Exception
+                    summary.failed += 1
+                    summary.errors.append(f"{key}: {result}")
+                    continue
+                feats = result
+                if cfg.run.use_cache and key in self.cache:
+                    rec = self.cache.get(key) or {}
+                    rec["sae_top_features"] = feats
+                    self.cache.upsert(key, rec)
+                if cfg.run.write_baserow:
+                    batch.append({"id": row["id"], sae_col: json.dumps(feats)})
+                summary.processed += 1
+
             if cfg.run.use_cache:
                 self.cache.save()
             if cfg.run.write_baserow and batch:
-                self.baserow.update_rows(bw.table_id, list(batch))
-            batch.clear()
+                self.baserow.update_rows(bw.table_id, batch)
 
-        for row in tqdm(pending, desc=f"SAE {cfg.name}", unit="prot"):
-            key = row[bw.id_column]
-            seq = row[bw.sequence_column]
-            try:
-                feats = {m: tf.as_dict() for m, tf in self.embedder.sae_one(seq).items()}
-            except Exception as err:  # noqa: BLE001
-                summary.failed += 1
-                summary.errors.append(f"{key}: {err}")
-                continue
-
-            if cfg.run.use_cache and key in self.cache:
-                rec = self.cache.get(key) or {}
-                rec["sae_top_features"] = feats
-                self.cache.upsert(key, rec)
-            if cfg.run.write_baserow:
-                batch.append({"id": row["id"], sae_col: json.dumps(feats)})
-            summary.processed += 1
-            if len(batch) >= cfg.run.batch_size:
-                flush()
-
-        flush()
+            processed += len(chunk)
+            print(
+                f"  checkpoint {processed}/{total} "
+                f"(processed={summary.processed} failed={summary.failed})"
+            )
         return summary

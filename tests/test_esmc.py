@@ -157,6 +157,26 @@ def test_embed_many_returns_one_result_per_sequence(monkeypatch):
     assert vecs == [[0.5, 1.5, 2.5], [0.5, 1.5, 2.5]]
 
 
+def test_sae_many_returns_top_features_per_sequence(monkeypatch):
+    import torch
+
+    monkeypatch.setenv("BIOHUB_API_TOKEN", "tok")
+    acts = torch.zeros(4, 6)  # [L+2, F]; residues 1..2 carry signal
+    acts[1, 3] = 2.0
+    acts[2, 5] = 1.0
+    output = FakeLogitsOutput(sae_outputs={"sae-x": acts})
+    _install_fake_esm(monkeypatch, output)
+    cfg = load_config(CONFIG)
+    cfg.biohub_token = "tok"
+    cfg.sae.models = ["sae-x"]
+    cfg.sae.top_k = 2
+    cfg.run.max_workers = 0  # use the fake batch_executor (no real ForgeBatchExecutor)
+    res = ESMCEmbedder(cfg).sae_many(["MKT", "AAA"])
+    assert len(res) == 2
+    for entry in res:
+        assert set(entry["sae-x"]["indices"]) == {3, 5}
+
+
 def test_sae_one_empty_when_no_models(monkeypatch):
     monkeypatch.setenv("BIOHUB_API_TOKEN", "tok")
     _install_fake_esm(monkeypatch, FakeLogitsOutput())
