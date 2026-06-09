@@ -10,6 +10,8 @@ def _fake_info(idx, **kw):
         "summary": f"summary-{idx}",
         "description": f"desc-{idx}",
         "category": "cat",
+        "uniref90_idf": 2.0,
+        "top_swissprot_activations": [{"uniprot_id": f"P{idx}", "activation": 9.0}],
     }
 
 
@@ -18,7 +20,9 @@ def test_fetch_feature_descriptions_dedups_sorts_and_maps(monkeypatch, tmp_path)
     df = atlas.fetch_feature_descriptions([3, 1, 1, 2], cache_path=tmp_path / "c.parquet")
     assert list(df["feature"]) == [1, 2, 3]
     assert dict(zip(df["feature"], df["label"])) == {1: "label-1", 2: "label-2", 3: "label-3"}
-    assert set(df.columns) == {"feature", "label", "summary", "description", "category"}
+    assert list(df.columns) == atlas.COLUMNS
+    assert dict(zip(df["feature"], df["swissprot_top"])) == {1: "P1", 2: "P2", 3: "P3"}
+    assert list(df["uniref90_idf"]) == [2.0, 2.0, 2.0]
 
 
 def test_fetch_feature_descriptions_uses_cache(monkeypatch, tmp_path):
