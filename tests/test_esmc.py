@@ -47,14 +47,42 @@ def _install_fake_esm(monkeypatch, output):
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
+    class ESMProteinError(Exception):
+        def __init__(self, error_code=500, message=""):
+            self.error_code = error_code
+            super().__init__(message)
+
     captured = {}
 
     def esmc_client(model, url, token, request_timeout=None):
         captured.update(model=model, url=url, token=token)
         return FakeClient(output)
 
+    class _FakeExecutor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute_batch(self, fn, **kwargs):
+            # fan a single list kwarg out to per-item calls (synchronously)
+            (name, values), = kwargs.items()
+            results = []
+            for v in values:
+                try:
+                    results.append(fn(**{name: v}))
+                except Exception as err:  # match executor: capture, don't raise
+                    results.append(err)
+            return results
+
+    def batch_executor(max_attempts=10, show_progress=True):
+        return _FakeExecutor()
+
     sdk.esmc_client = esmc_client
+    sdk.batch_executor = batch_executor
     api.ESMProtein = ESMProtein
+    api.ESMProteinError = ESMProteinError
     api.LogitsConfig = LogitsConfig
     api.SAEConfig = SAEConfig
 
@@ -117,6 +145,16 @@ def test_embed_one_flattens_nested_mean_embedding(monkeypatch):
     cfg.biohub_token = "tok"
     vec = ESMCEmbedder(cfg).embed_one("MKTAYIA")
     assert vec == [0.5, 1.5, 2.5]
+
+
+def test_embed_many_returns_one_result_per_sequence(monkeypatch):
+    monkeypatch.setenv("BIOHUB_API_TOKEN", "tok")
+    output = FakeLogitsOutput(mean_embedding=FakeTensor([0.5, 1.5, 2.5]))
+    _install_fake_esm(monkeypatch, output)
+    cfg = load_config(CONFIG)
+    cfg.biohub_token = "tok"
+    vecs = ESMCEmbedder(cfg).embed_many(["MKTAYIA", "MK*"])
+    assert vecs == [[0.5, 1.5, 2.5], [0.5, 1.5, 2.5]]
 
 
 def test_sae_one_empty_when_no_models(monkeypatch):

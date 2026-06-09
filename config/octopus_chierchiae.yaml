@@ -43,7 +43,7 @@ sae:
   pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"
 
 run:
-  batch_size: 16                 # proteins per Biohub batch request
+  batch_size: 256                # proteins per concurrent Biohub batch + checkpoint chunk
   max_attempts: 10               # retry attempts inside batch_executor
   cache_dir: ".cache/octopus_chierchiae"
   write_baserow: true            # write results back to the Transcripts table

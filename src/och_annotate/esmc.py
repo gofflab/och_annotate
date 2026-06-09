@@ -71,10 +71,11 @@ class ESMCEmbedder:
         if self._client is not None:
             return
         from esm.sdk import esmc_client  # noqa: WPS433 (lazy heavy import)
-        from esm.sdk.api import ESMProtein, LogitsConfig, SAEConfig
+        from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig, SAEConfig
 
         self._api = {
             "ESMProtein": ESMProtein,
+            "ESMProteinError": ESMProteinError,
             "LogitsConfig": LogitsConfig,
             "SAEConfig": SAEConfig,
         }
@@ -122,6 +123,42 @@ class ESMCEmbedder:
         # embeddings: [1, L, d] including BOS/EOS -> drop specials, mean over L.
         pooled = emb[0, 1:-1, :].mean(dim=0)
         return _to_list(pooled)
+
+    def embed_many(self, sequences: list[str]) -> list[list[float] | Exception]:
+        """Mean-pool many sequences concurrently via the Forge batch executor.
+
+        Returns one entry per input, in order: a ``list[float]`` embedding on
+        success, or the ``ESMProteinError``/``Exception`` for sequences that
+        failed after the executor's retries. The executor fans calls out across
+        up to 64 workers with AIMD rate-limiting (auto back-off on 429/5xx), so
+        the whole proteome embeds in minutes instead of hours.
+        """
+        self._ensure_client()
+        from esm.sdk import batch_executor  # noqa: WPS433 (lazy heavy import)
+
+        ESMProtein = self._api["ESMProtein"]
+        ESMProteinError = self._api["ESMProteinError"]
+        LogitsConfig = self._api["LogitsConfig"]
+        mean_cfg = LogitsConfig(sequence=True, return_mean_embedding=True)
+
+        def _one(sequence: str):
+            # One attempt; the executor handles retries on transient errors.
+            tensor = self._client.encode(ESMProtein(sequence=_sanitize_sequence(sequence)))
+            if isinstance(tensor, ESMProteinError):
+                return tensor
+            out = self._client.logits(tensor, mean_cfg)
+            if isinstance(out, ESMProteinError):
+                return out
+            if out.mean_embedding is not None:
+                return _to_list(out.mean_embedding)
+            # Server omitted the mean embedding: pool per-residue locally.
+            out = self._client.logits(tensor, LogitsConfig(sequence=True, return_embeddings=True))
+            if isinstance(out, ESMProteinError):
+                return out
+            return _to_list(out.embeddings[0, 1:-1, :].mean(dim=0))
+
+        with batch_executor(max_attempts=self.config.run.max_attempts) as executor:
+            return executor.execute_batch(_one, sequence=list(sequences))
 
     def sae_one(self, sequence: str) -> dict[str, TopFeatures]:
         """Return top-K SAE features per configured SAE model for one sequence."""

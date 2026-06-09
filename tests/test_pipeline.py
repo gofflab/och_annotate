@@ -31,6 +31,9 @@ class FakeEmbedder:
         self.calls += 1
         return [float(len(sequence)), 0.0, 1.0]
 
+    def embed_many(self, sequences):
+        return [self.embed_one(s) for s in sequences]
+
 
 def _make_pipeline(tmp_path, rows):
     cfg = load_config(CONFIG)

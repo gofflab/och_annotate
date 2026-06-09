@@ -12,8 +12,6 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from tqdm import tqdm
-
 from och_annotate.baserow import BaserowClient
 from och_annotate.cache import EmbeddingCache, sequence_hash
 from och_annotate.config import Config
@@ -115,51 +113,63 @@ class EmbeddingPipeline:
         return summary
 
     def _embed_rows(self, pending: list[dict], summary: RunSummary) -> None:
+        """Embed pending rows concurrently in checkpointed chunks.
+
+        Each chunk is fanned out across the Forge batch executor, then persisted
+        to the cache + Baserow before the next chunk starts, so an interrupted
+        run resumes at chunk granularity without re-spending Biohub calls.
+        """
         cfg = self.config
         out = cfg.baserow.output_columns
-        batch: list[dict] = []
+        chunk_size = max(cfg.run.batch_size, 1)
+        total = len(pending)
+        processed = 0
 
-        def flush() -> None:
+        for start in range(0, total, chunk_size):
+            chunk = pending[start : start + chunk_size]
+            sequences = [row[cfg.baserow.sequence_column] for row in chunk]
+            results = self.embedder.embed_many(sequences)
+
+            stamp = _now_iso()
+            batch: list[dict] = []
+            for row, result in zip(chunk, results):
+                key = row[cfg.baserow.id_column]
+                if not isinstance(result, list):  # ESMProteinError / Exception
+                    summary.failed += 1
+                    summary.errors.append(f"{key}: {result}")
+                    continue
+                vector = result
+                if cfg.run.use_cache:
+                    meta = {k: row.get(k) for k in cfg.baserow.metadata_columns}
+                    self.cache.upsert(
+                        key,
+                        {
+                            **meta,
+                            "seq_hash": sequence_hash(row[cfg.baserow.sequence_column]),
+                            "model": cfg.esmc.model,
+                            "embedded_at": stamp,
+                            "embedding": vector,
+                        },
+                    )
+                if cfg.run.write_baserow:
+                    batch.append(
+                        {
+                            "id": row["id"],
+                            out["embedding"]: json.dumps(vector),
+                            out["model"]: cfg.esmc.model,
+                            out["embedded_at"]: stamp,
+                        }
+                    )
+                summary.embedded += 1
+
+            # Checkpoint this chunk before moving on.
             if cfg.run.use_cache:
                 self.cache.save()
             if cfg.run.write_baserow and batch:
-                self.baserow.update_rows(cfg.baserow.table_id, list(batch))
-            batch.clear()
+                self.baserow.update_rows(cfg.baserow.table_id, batch)
 
-        for row in tqdm(pending, desc=f"Embedding {cfg.name}", unit="prot"):
-            key = row[cfg.baserow.id_column]
-            seq = row[cfg.baserow.sequence_column]
-            try:
-                vector = self.embedder.embed_one(seq)
-            except Exception as err:  # noqa: BLE001
-                summary.failed += 1
-                summary.errors.append(f"{key}: {err}")
-                continue
-
-            stamp = _now_iso()
-            if cfg.run.use_cache:
-                meta = {k: row.get(k) for k in cfg.baserow.metadata_columns}
-                self.cache.upsert(
-                    key,
-                    {
-                        **meta,
-                        "seq_hash": sequence_hash(seq),
-                        "model": cfg.esmc.model,
-                        "embedded_at": stamp,
-                        "embedding": vector,
-                    },
-                )
-            if cfg.run.write_baserow:
-                batch.append(
-                    {
-                        "id": row["id"],
-                        out["embedding"]: json.dumps(vector),
-                        out["model"]: cfg.esmc.model,
-                        out["embedded_at"]: stamp,
-                    }
-                )
-            summary.embedded += 1
-            if len(batch) >= cfg.run.batch_size:
-                flush()
-
-        flush()
+            processed += len(chunk)
+            print(
+                f"  checkpoint {processed}/{total} "
+                f"(embedded={summary.embedded} failed={summary.failed})"
+            )
