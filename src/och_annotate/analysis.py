@@ -151,6 +151,60 @@ def sae_enrichment(adata, groupby: str = "leiden", method: str = "wilcoxon", n: 
     return table
 
 
+def _pick_column(columns, candidates) -> str | None:
+    lower = {str(c).lower(): c for c in columns}
+    for cand in candidates:
+        if cand in lower:
+            return lower[cand]
+    return None
+
+
+def load_sae_descriptions(path) -> dict[str, str]:
+    """Load a ``feature_index -> natural-language description`` mapping.
+
+    Returns ``{}`` if the file is absent (so the notebook degrades gracefully).
+    Accepts CSV/TSV/JSON/parquet and auto-detects the index column
+    (feature/index/id/latent/…) and the text column
+    (description/label/explanation/annotation/summary/…). Keys are stringified
+    feature indices to match the AnnData ``var_names`` / enrichment ``sae_feature``.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return {}
+    suffix = p.suffix.lower()
+    if suffix == ".json":
+        data = json.loads(p.read_text())
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+        df = pd.DataFrame(data)
+    elif suffix == ".parquet":
+        df = pd.read_parquet(p)
+    else:
+        df = pd.read_csv(p, sep="\t" if suffix == ".tsv" else ",")
+    idx_col = _pick_column(
+        df.columns, ["feature", "index", "id", "feature_id", "feature_index", "latent", "latent_index"]
+    )
+    txt_col = _pick_column(
+        df.columns, ["description", "label", "explanation", "annotation", "summary", "text", "name"]
+    )
+    if idx_col is None or txt_col is None:
+        raise ValueError(
+            f"Could not find index/description columns in {list(df.columns)} — "
+            "expected something like 'feature'/'index' and 'description'/'label'."
+        )
+    return {str(i): str(t) for i, t in zip(df[idx_col], df[txt_col])}
+
+
+def annotate_enrichment(enrichment: pd.DataFrame, descriptions: dict[str, str],
+                        feature_col: str = "sae_feature") -> pd.DataFrame:
+    """Add a ``description`` column to an enrichment table from a descriptions map."""
+    out = enrichment.copy()
+    out["description"] = out[feature_col].astype(str).map(lambda f: descriptions.get(f, ""))
+    return out
+
+
 def run_umap(
     df: pd.DataFrame,
     *,

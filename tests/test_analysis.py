@@ -55,3 +55,29 @@ def test_sae_feature_matrix_infers_width():
 
     matrix, _ = sae_feature_matrix(_df())  # width inferred from max index (40) -> 41
     assert matrix.shape == (3, 41)
+
+
+def test_load_sae_descriptions_missing_returns_empty(tmp_path):
+    from och_annotate.analysis import load_sae_descriptions
+
+    assert load_sae_descriptions(tmp_path / "nope.csv") == {}
+
+
+def test_load_sae_descriptions_csv_and_json(tmp_path):
+    from och_annotate.analysis import load_sae_descriptions
+
+    csv = tmp_path / "d.csv"
+    csv.write_text("feature,description\n10,zinc finger\n20,signal peptide\n")
+    assert load_sae_descriptions(csv) == {"10": "zinc finger", "20": "signal peptide"}
+
+    js = tmp_path / "d.json"
+    js.write_text(json.dumps({"10": "zinc finger", "20": "signal peptide"}))
+    assert load_sae_descriptions(js) == {"10": "zinc finger", "20": "signal peptide"}
+
+
+def test_annotate_enrichment_adds_descriptions():
+    from och_annotate.analysis import annotate_enrichment
+
+    enrich = pd.DataFrame({"leiden": ["0", "0"], "sae_feature": ["10", "99"]})
+    out = annotate_enrichment(enrich, {"10": "zinc finger"})
+    assert list(out["description"]) == ["zinc finger", ""]
