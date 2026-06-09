@@ -45,3 +45,31 @@ def test_fetch_feature_descriptions_records_failures(monkeypatch, tmp_path):
     df = atlas.fetch_feature_descriptions([7], cache_path=tmp_path / "c.parquet")
     assert df.loc[0, "label"] == ""
     assert "<error" in df.loc[0, "description"]
+
+
+def test_fetch_all_features_bulk_and_cache(monkeypatch, tmp_path):
+    import requests
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [
+                {"feature_index": 0, "label": "L0", "description": "D0"},
+                {"feature_index": 1, "label": "L1", "description": "D1"},
+            ]}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+    cache = tmp_path / "dict.parquet"
+    df = atlas.fetch_all_features(cache_path=cache)
+    assert list(df["feature"]) == [0, 1]
+    assert dict(zip(df["feature"], df["label"])) == {0: "L0", 1: "L1"}
+
+    # second call serves from cache without hitting the network
+    def _boom(*a, **k):
+        raise AssertionError("refetched")
+
+    monkeypatch.setattr(requests, "get", _boom)
+    assert len(atlas.fetch_all_features(cache_path=cache)) == 2
+

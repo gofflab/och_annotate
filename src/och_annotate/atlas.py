@@ -17,6 +17,35 @@ ATLAS_BASE = "https://biohub.ai"
 FIELDS = ["label", "summary", "description", "category"]
 
 
+def fetch_all_features(
+    *, base_url: str = ATLAS_BASE, timeout: int = 60, cache_path: str | Path | None = None
+) -> pd.DataFrame:
+    """Fetch the **complete** SAE feature dictionary in a single Atlas call.
+
+    The list endpoint (``/features``) returns every codebook feature's
+    ``feature_index``, ``label`` and ``description`` at once (no ``summary`` /
+    ``category`` — those are per-feature only). This is the cheapest way to get
+    the full dictionary; result is cached to ``cache_path`` if given.
+    """
+    import requests
+
+    if cache_path and Path(cache_path).exists():
+        p = Path(cache_path)
+        return pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
+    resp = requests.get(f"{base_url}/esm/protein/api/v1alpha1/features", timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    df = pd.DataFrame(
+        [{"feature": int(d["feature_index"]), "label": d.get("label", ""),
+          "description": d.get("description", "")} for d in data]
+    )
+    if cache_path and len(df):
+        p = Path(cache_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(p, index=False) if p.suffix == ".parquet" else df.to_csv(p, index=False)
+    return df
+
+
 def feature_info(idx: int, *, base_url: str = ATLAS_BASE, timeout: int = 30, session=None) -> dict:
     """Fetch the raw Atlas metadata for a single SAE feature index."""
     import requests
