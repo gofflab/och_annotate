@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# och_annotate local artifacts
+.cache/
+data/cache/
+*.parquet
+*.npz
+.env.local
+
+# Generated analysis outputs
+umap*.html
+*.html
+
+# Cached SAE feature descriptions (regenerable from the ESM Atlas API)
+data/*.parquet
+data/*.csv

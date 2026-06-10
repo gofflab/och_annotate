@@ -1,0 +1,60 @@
+name: Daily ESMC embed (resumable)
+
+# Chips away at the proteome one daily Biohub credit allotment at a time.
+# Each run resumes from Baserow (skips proteins that already have an embedding +
+# SAE) and stops early once the daily credit limit is hit, so it finishes fast.
+#
+# Requires two repository secrets (Settings -> Secrets and variables -> Actions):
+#   BASEROW_TOKEN      - read + edit-row rights on the Transcripts table
+#   BIOHUB_API_TOKEN   - ESMC API token
+#
+# Adjust the cron time to land just after your Biohub daily quota resets.
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # 08:00 UTC daily
+  workflow_dispatch:       # also runnable on demand (e.g. right after a limit bump)
+    inputs:
+      no_sae:
+        description: "Embed only (skip SAE)"
+        type: boolean
+        default: false
+      max_workers:
+        description: "Concurrent Biohub requests (<=64)"
+        type: string
+        default: "16"
+
+concurrency:
+  group: esmc-embed        # never let two runs hit the API at once
+  cancel-in-progress: false
+
+jobs:
+  embed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Embed (resumes from Baserow; stops at the daily credit limit)
+        env:
+          BASEROW_TOKEN: ${{ secrets.BASEROW_TOKEN }}
+          BIOHUB_API_TOKEN: ${{ secrets.BIOHUB_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "${{ inputs.no_sae }}" = "true" ]; then EXTRA="--no-sae"; fi
+          MW="${{ inputs.max_workers }}"; MW="${MW:-16}"
+          echo "Workload before this run:"
+          och-annotate embed -c config/octopus_chierchiae.yaml --dry-run $EXTRA
+          echo "Running..."
+          och-annotate embed -c config/octopus_chierchiae.yaml --max-workers "$MW" $EXTRA
