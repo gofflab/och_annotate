@@ -234,3 +234,6 @@ data/*.csv
 
 # local diagnostic logs
 logs/
+
+# throwaway executed-notebook artifacts
+notebooks/_explore_run.*

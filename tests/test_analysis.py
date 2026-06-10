@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from och_annotate.analysis import sae_feature_activation
+from och_annotate.analysis import load_embeddings, sae_feature_activation
 
 
 def _df():
@@ -36,6 +36,35 @@ def test_default_model_uses_first_stored():
     # no sae_model given -> read whichever model is stored
     s = sae_feature_activation(_df(), 10)
     assert list(s) == [0.9, 0.0, 0.0]
+
+
+def test_load_embeddings_from_baserow_includes_sae(monkeypatch):
+    """The Baserow loader must pull sae_top_features, else build_anndata can't run."""
+    from och_annotate import analysis
+    from och_annotate.config import load_config
+
+    cfg = load_config("config/octopus_chierchiae.yaml")
+    cfg.baserow_token = "tok"
+    sae_blob = json.dumps({"sae-x": {"indices": [1, 2], "activations": [0.9, 0.4]}})
+    rows = [
+        {"transcript_id": "T1", "esmc_embedding": json.dumps([0.1, 0.2]),
+         "sae_top_features": sae_blob},
+        {"transcript_id": "T2", "esmc_embedding": None},  # unembedded -> skipped
+    ]
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def iter_rows(self, *a, **k): return iter(rows)
+
+    monkeypatch.setattr(analysis, "BaserowClient", FakeClient)
+    # force the Baserow path (prefer_cache stays True but cache is empty -> falls through)
+    monkeypatch.setattr(analysis.EmbeddingCache, "__len__", lambda self: 0)
+
+    df = load_embeddings(cfg, prefer_cache=False)
+    assert list(df["transcript_id"]) == ["T1"]
+    assert df.loc[0, "embedding"] == [0.1, 0.2]
+    assert "sae_top_features" in df.columns
+    assert df.loc[0, "sae_top_features"] == sae_blob
 
 
 def test_sae_feature_matrix_shapes_and_values():

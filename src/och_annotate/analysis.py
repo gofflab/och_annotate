@@ -37,7 +37,10 @@ def load_embeddings(config: Config, *, prefer_cache: bool = True) -> pd.DataFram
     bw = config.baserow
     client = BaserowClient(bw.base_url, config.baserow_token)
     emb_col = bw.output_columns["embedding"]
+    sae_col = bw.output_columns.get("sae")  # JSON {sae_model: {...}}; needed for SAE analysis
     wanted = set(bw.metadata_columns) | {bw.id_column, emb_col}
+    if sae_col:
+        wanted.add(sae_col)
     records = []
     for row in client.iter_rows(bw.table_id):
         raw = row.get(emb_col)
