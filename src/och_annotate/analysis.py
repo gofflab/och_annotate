@@ -375,9 +375,16 @@ def plot_umap(
     *,
     color: str | None = None,
     hover: list[str] | None = None,
+    labels: dict[str, str] | None = None,
     title: str = "Proteome UMAP",
 ):
-    """Interactive 2-D scatter of UMAP coordinates colored by a metadata column."""
+    """Interactive 2-D scatter of UMAP coordinates colored by a metadata column.
+
+    ``hover`` references the dataframe's real column names (matching Baserow).
+    ``labels`` is an optional ``{column: pretty_name}`` map applied at plot time
+    for display only, so hover stays robust to Baserow's exact casing without
+    renaming dataframe columns.
+    """
     import plotly.express as px
 
     hover = hover or [c for c in df.columns if not c.startswith("umap_") and c != "embedding"]
@@ -388,6 +395,7 @@ def plot_umap(
         y="umap_1",
         color=color,
         hover_data=hover,
+        labels=labels or {},
         title=title,
         opacity=0.75,
     )
