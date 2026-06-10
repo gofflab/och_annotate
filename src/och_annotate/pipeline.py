@@ -1,0 +1,237 @@
+"""End-to-end embedding pipeline: Baserow -> ESMC -> Baserow + cache.
+
+Designed to be token-frugal and resumable:
+  * only embeds proteins missing an embedding (cache or Baserow column)
+  * checkpoints to the local cache every batch, so an interrupted run resumes
+  * a dry run reports exactly how many Biohub calls a real run would make
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from och_annotate.baserow import BaserowClient
+from och_annotate.cache import EmbeddingCache, sequence_hash
+from och_annotate.config import Config
+from och_annotate.esmc import ESMCEmbedder
+
+
+@dataclass
+class RunSummary:
+    total_rows: int = 0
+    to_embed: int = 0
+    embedded: int = 0
+    skipped_existing: int = 0
+    skipped_empty: int = 0
+    skipped_too_long: int = 0
+    failed: int = 0
+    stopped_early: bool = False
+    errors: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return self.__dict__
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_credit_limited(err: object) -> bool:
+    """True if a failure is the Biohub daily credit-limit / rate cap (HTTP 429)."""
+    msg = str(err).lower()
+    return "credit limit" in msg or "usage cap" in msg
+
+
+class EmbeddingPipeline:
+    def __init__(self, config: Config):
+        self.config = config
+        self.baserow = BaserowClient(
+            config.baserow.base_url, config.baserow_token, timeout=config.esmc.request_timeout
+        )
+        self.cache = EmbeddingCache(config.run.cache_dir, id_column=config.baserow.id_column)
+        self.embedder = ESMCEmbedder(config)
+
+    # ---- selection ---------------------------------------------------------
+    @property
+    def _sae_enabled(self) -> bool:
+        return bool(self.config.sae.models)
+
+    def _has_embedding(self, row: dict, sequence: str) -> bool:
+        key = row[self.config.baserow.id_column]
+        if self.config.run.use_cache and self.cache.is_fresh(key, sequence):
+            return True
+        return bool(row.get(self.config.baserow.output_columns["embedding"]))
+
+    def _has_sae(self, row: dict) -> bool:
+        key = row[self.config.baserow.id_column]
+        if self.config.run.use_cache:
+            rec = self.cache.get(key)
+            if rec and rec.get("sae_top_features"):
+                return True
+        return bool(row.get(self.config.baserow.output_columns["sae"]))
+
+    def _needs_embedding(self, row: dict, sequence: str) -> bool:
+        if not self.config.run.skip_existing:
+            return True
+        if not self._has_embedding(row, sequence):
+            return True
+        # When SAE is enabled a row also needs processing if it lacks SAE
+        # features (e.g. it was embedded before SAE was turned on).
+        if self._sae_enabled and not self._has_sae(row):
+            return True
+        return False
+
+    def _fetch_rows(self) -> list[dict]:
+        bw = self.config.baserow
+        wanted = set(bw.metadata_columns) | {
+            bw.sequence_column,
+            bw.id_column,
+            bw.output_columns["embedding"],
+        }
+        if self._sae_enabled:
+            wanted.add(bw.output_columns["sae"])
+        rows = self.baserow.fetch_rows(bw.table_id)
+        # keep the Baserow integer row id (needed for write-back) + wanted columns
+        return [{"id": r["id"], **{k: r.get(k) for k in wanted}} for r in rows]
+
+    # ---- run ---------------------------------------------------------------
+    def run(self, *, dry_run: bool = False, limit: int | None = None) -> RunSummary:
+        cfg = self.config
+        cfg.require_tokens(baserow=True, biohub=not dry_run)
+        summary = RunSummary()
+
+        if cfg.run.write_baserow and not dry_run:
+            output_keys = ["embedding", "model", "embedded_at"]
+            if self._sae_enabled:
+                output_keys.append("sae")
+            created = self.baserow.ensure_fields(
+                cfg.baserow.table_id,
+                [cfg.baserow.output_columns[k] for k in output_keys],
+            )
+            created_names = [n for n, did in created.items() if did]
+            if created_names:
+                print(f"Created Baserow columns: {', '.join(created_names)}")
+
+        rows = self._fetch_rows()
+        summary.total_rows = len(rows)
+
+        # Classify rows up front so a dry run is honest about the workload.
+        pending: list[dict] = []
+        for row in rows:
+            seq = row.get(cfg.baserow.sequence_column)
+            if not seq:
+                summary.skipped_empty += 1
+                continue
+            if len(seq) > cfg.esmc.max_sequence_length:
+                summary.skipped_too_long += 1
+                continue
+            if not self._needs_embedding(row, seq):
+                summary.skipped_existing += 1
+                continue
+            pending.append(row)
+
+        if limit is not None:
+            pending = pending[:limit]
+        summary.to_embed = len(pending)
+
+        if dry_run:
+            return summary
+
+        self._embed_rows(pending, summary)
+        return summary
+
+    def _embed_rows(self, pending: list[dict], summary: RunSummary) -> None:
+        """Embed pending rows concurrently in checkpointed chunks.
+
+        Each chunk is fanned out across the Forge batch executor, then persisted
+        to the cache + Baserow before the next chunk starts, so an interrupted
+        run resumes at chunk granularity without re-spending Biohub calls.
+        """
+        cfg = self.config
+        out = cfg.baserow.output_columns
+        sae_on = self._sae_enabled
+        chunk_size = max(cfg.run.batch_size, 1)
+        total = len(pending)
+        processed = 0
+
+        for start in range(0, total, chunk_size):
+            chunk = pending[start : start + chunk_size]
+            sequences = [row[cfg.baserow.sequence_column] for row in chunk]
+            if sae_on:
+                results = self.embedder.embed_and_sae_many(sequences)
+            else:
+                results = self.embedder.embed_many(sequences)
+
+            stamp = _now_iso()
+            batch: list[dict] = []
+            chunk_ok = 0
+            chunk_credit_blocked = 0
+            for row, result in zip(chunk, results):
+                key = row[cfg.baserow.id_column]
+                # Normalise the per-protein result to (vector, sae_feats).
+                if sae_on:
+                    if not isinstance(result, dict):  # ESMProteinError / Exception
+                        summary.failed += 1
+                        summary.errors.append(f"{key}: {result}")
+                        chunk_credit_blocked += _is_credit_limited(result)
+                        continue
+                    vector = result["embedding"]
+                    sae_feats = result["sae"]
+                else:
+                    if not isinstance(result, list):  # ESMProteinError / Exception
+                        summary.failed += 1
+                        summary.errors.append(f"{key}: {result}")
+                        chunk_credit_blocked += _is_credit_limited(result)
+                        continue
+                    vector = result
+                    sae_feats = None
+
+                if cfg.run.use_cache:
+                    meta = {k: row.get(k) for k in cfg.baserow.metadata_columns}
+                    record = {
+                        **meta,
+                        "seq_hash": sequence_hash(row[cfg.baserow.sequence_column]),
+                        "model": cfg.esmc.model,
+                        "embedded_at": stamp,
+                        "embedding": vector,
+                    }
+                    if sae_feats is not None:
+                        record["sae_top_features"] = sae_feats
+                    self.cache.upsert(key, record)
+                if cfg.run.write_baserow:
+                    item = {
+                        "id": row["id"],
+                        out["embedding"]: json.dumps(vector),
+                        out["model"]: cfg.esmc.model,
+                        out["embedded_at"]: stamp,
+                    }
+                    if sae_feats is not None:
+                        item[out["sae"]] = json.dumps(sae_feats)
+                    batch.append(item)
+                summary.embedded += 1
+                chunk_ok += 1
+
+            # Checkpoint this chunk before moving on.
+            if cfg.run.use_cache:
+                self.cache.save()
+            if cfg.run.write_baserow and batch:
+                self.baserow.update_rows(cfg.baserow.table_id, batch)
+
+            processed += len(chunk)
+            print(
+                f"  checkpoint {processed}/{total} "
+                f"(embedded={summary.embedded} failed={summary.failed})"
+            )
+
+            # Daily Biohub credit limit reached: every remaining call will fail
+            # the same way, so stop now instead of churning thousands of doomed
+            # chunks. The run is resumable — tomorrow picks up where this left off.
+            if chunk_ok == 0 and chunk_credit_blocked:
+                summary.stopped_early = True
+                print(
+                    "  Biohub daily credit limit reached — stopping early. "
+                    "Re-run after the quota resets to continue."
+                )
+                break

@@ -1,0 +1,18 @@
+# Conda/mamba environment for och_annotate.
+#
+#   mamba env create -f environment.yml   # (or: conda env create -f environment.yml)
+#   conda activate och_annotate
+#
+# Heavy / fast-moving ML deps (the Biohub esm SDK fork, torch, umap) are installed
+# via pip so we always track the published wheels rather than conda-forge lag.
+#
+# NOTE: Biohub's esm fork requires Python 3.12 (it pins a Biohub transformers
+# fork). The editable install below pulls esm straight from git per pyproject.
+name: och_annotate
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -e .
