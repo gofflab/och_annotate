@@ -185,3 +185,51 @@ def test_sae_one_empty_when_no_models(monkeypatch):
     cfg.sae.models = []  # default: SAE disabled
     embedder = ESMCEmbedder(cfg)
     assert embedder.sae_one("MKTAYIA") == {}
+
+
+def _embedder_for_topk(pooling="max", residue_regions=False, top_k=8):
+    cfg = load_config(CONFIG)
+    cfg.sae.pooling = pooling
+    cfg.sae.residue_regions = residue_regions
+    cfg.sae.top_k = top_k
+    return ESMCEmbedder(cfg)
+
+
+def test_sparse_pooling_matches_dense_topk():
+    """The memory-light sparse path must give identical top-K to densifying."""
+    import torch
+
+    torch.manual_seed(0)
+    L, F, k = 50, 4096, 64  # [1, L, F] with BOS/EOS, k active features per residue
+    rows, cols, vals = [], [], []
+    for r in range(L):
+        feats = torch.randperm(F)[:k]
+        for f in feats.tolist():
+            rows.append(r); cols.append(f); vals.append(float(torch.rand(1)) + 0.01)
+    sparse = torch.sparse_coo_tensor(
+        torch.tensor([[0] * len(rows), rows, cols]), torch.tensor(vals), size=(1, L, F)
+    ).coalesce()
+    dense = sparse.to_dense()
+
+    for pooling in ("max", "mean"):
+        emb = _embedder_for_topk(pooling=pooling)
+        sparse_res = emb._top_features(sparse)                     # sparse fast path
+        dense_res = emb._top_features(dense)                       # dense reference path
+        assert sparse_res.indices == dense_res.indices
+        for a, b in zip(sparse_res.activations, dense_res.activations):
+            assert abs(a - b) < 1e-5
+        assert sparse_res.regions is None
+
+
+def test_residue_regions_path_still_densifies_when_enabled():
+    """With residue_regions on, the dense path runs and emits spans aligned to indices."""
+    import torch
+
+    L, F = 10, 32
+    dense = torch.zeros(1, L, F)
+    dense[0, 3, 7] = 5.0   # feature 7 peaks at residue index 2 (after dropping BOS)
+    dense[0, 4, 7] = 4.0
+    emb = _embedder_for_topk(pooling="max", residue_regions=True, top_k=1)
+    res = emb._top_features(dense.to_sparse().coalesce())
+    assert res.indices == [7]
+    assert res.regions is not None and len(res.regions) == 1

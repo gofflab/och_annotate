@@ -231,3 +231,6 @@ umap*.html
 # Cached SAE feature descriptions (regenerable from the ESM Atlas API)
 data/*.parquet
 data/*.csv
+
+# local diagnostic logs
+logs/

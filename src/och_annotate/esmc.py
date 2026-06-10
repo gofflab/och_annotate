@@ -325,11 +325,47 @@ class ESMCEmbedder:
         return results
 
     def _top_features(self, activations) -> TopFeatures:
-        """Pool per-residue SAE activations over the sequence, take top-K."""
+        """Pool per-residue SAE activations over the sequence, take top-K.
+
+        SAE activations arrive as a sparse COO ``[1, L, F]`` (or ``[L, F]``) with
+        a huge codebook ``F`` (e.g. 16384). Densifying that full matrix costs up
+        to ~134 MB per protein and, under concurrent workers, spikes memory hard
+        enough to OOM the process. So in the default path we pool directly on the
+        sparse tensor — only the length-``F`` pooled vector is ever dense. The
+        full densify is kept solely for the optional residue-region path, and
+        even then only the top-K feature columns are materialised.
+        """
         import torch  # local import; only needed in the SAE path
 
+        pool = self.config.sae.pooling
+        residue_on = getattr(self.config.sae, "residue_regions", False)
+
         acts = activations
-        if acts.is_sparse:  # SAE activations come back as a sparse COO tensor
+        if acts.is_sparse:
+            acts = acts.coalesce()
+
+        # Memory-light path: pool a sparse [.., L, F] over residues without
+        # densifying the [L, F] matrix. SAE activations are non-negative
+        # (post-ReLU / k-sparse), so an amax/sum scatter against zeros matches
+        # the dense max/mean semantics exactly.
+        if acts.is_sparse and acts.dim() >= 2 and not residue_on:
+            idx, vals = acts.indices(), acts.values()
+            f_dim = acts.shape[-1]
+            ridx, fidx = idx[-2], idx[-1]
+            length = acts.shape[-2]
+            keep = (ridx >= 1) & (ridx <= length - 2)  # drop BOS/EOS rows
+            fidx, vals = fidx[keep], vals[keep]
+            pooled = torch.zeros(f_dim, dtype=vals.dtype if vals.numel() else torch.float32)
+            if vals.numel():
+                if pool == "max":
+                    pooled.scatter_reduce_(0, fidx, vals, reduce="amax", include_self=True)
+                else:  # mean over residues (inactive features contribute zeros)
+                    pooled.scatter_reduce_(0, fidx, vals, reduce="sum", include_self=True)
+                    pooled = pooled / max(length - 2, 1)
+            return self._topk(pooled, per_residue=None)
+
+        # Dense path: already-dense input, or residue-region extraction is on.
+        if acts.is_sparse:
             acts = acts.to_dense()
         if acts.dim() == 3:  # [1, L, F] -> [L, F]
             acts = acts[0]
@@ -337,15 +373,21 @@ class ESMCEmbedder:
         if acts.dim() == 2:  # [L, F] -> drop BOS/EOS, pool over residues
             acts = acts[1:-1]
             per_residue = acts  # keep for optional residue-region extraction
-            pooled = acts.max(dim=0).values if self.config.sae.pooling == "max" else acts.mean(dim=0)
+            pooled = acts.max(dim=0).values if pool == "max" else acts.mean(dim=0)
         else:
             pooled = acts
+        return self._topk(pooled, per_residue=per_residue if residue_on else None)
+
+    def _topk(self, pooled, *, per_residue) -> TopFeatures:
+        """Take top-K of a pooled [F] vector; optionally extract residue spans."""
+        import torch
+
         k = min(self.config.sae.top_k, pooled.numel())
         top = torch.topk(pooled, k)
         indices = [int(i) for i in top.indices.tolist()]
 
         regions = None
-        if getattr(self.config.sae, "residue_regions", False) and per_residue is not None:
+        if per_residue is not None:
             regions = _residue_regions(
                 per_residue.detach().cpu().float().numpy(),
                 indices,
