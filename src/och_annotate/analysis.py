@@ -407,6 +407,25 @@ def plot_umap(
     return fig
 
 
+def show_fig(fig, *, include_plotlyjs: bool | str = True):
+    """Display a plotly figure so it renders inline in Jupyter *and* embeds in
+    exported static HTML.
+
+    ``fig.show()`` routes through plotly's renderer system, which depends on the
+    runtime (JupyterLab/Notebook extension, VS Code, or requirejs in classic
+    nbconvert). When that JS environment isn't present the figure silently fails
+    to draw — blank inline, and blank in exported HTML (the ``require(['plotly'])``
+    div has no ``require`` in a plain browser). Returning the figure as
+    self-contained HTML with plotly.js inlined sidesteps all of that.
+
+    Inline the library once per notebook: pass ``include_plotlyjs=True`` for the
+    first figure, then ``False`` for the rest to avoid re-embedding ~3 MB each.
+    """
+    from IPython.display import HTML
+
+    return HTML(fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs))
+
+
 def save_html(fig, path: str) -> None:
     """Explicit opt-in export of an interactive plot to a standalone HTML file."""
     fig.write_html(path, include_plotlyjs="cdn")
