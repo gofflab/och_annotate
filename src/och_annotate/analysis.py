@@ -625,6 +625,7 @@ def plot_umap_searchable(
     labels: dict[str, str] | None = None,
     title: str = "Proteome UMAP",
     size: int = 820,
+    clip_hover_cols: dict[str, int] | None = None,
     embed_js: bool = True,
 ):
     """``plot_umap`` plus a client-side gene search box, returned as embeddable HTML.
@@ -642,6 +643,12 @@ def plot_umap_searchable(
     for every figure after the first in one document so plotly.js is embedded
     only once (it is reused from the page).
 
+    ``clip_hover_cols`` maps a column name to a max display length; values longer
+    than that are truncated with an ellipsis **for the hover/label display only**
+    (the raw dataframe and the search haystack stay full, so searching still
+    matches the untruncated text). Defaults to clipping ``Mmusculus_gene_name``
+    at 22 chars, since its long comma-lists otherwise blow up the tooltip.
+
     Returns an ``IPython.display.HTML`` object so a notebook cell renders it
     directly.
     """
@@ -656,8 +663,24 @@ def plot_umap_searchable(
     hover = [h for h in hover if h in df.columns]
     search_fields = [f for f in (search_fields or hover) if f in df.columns]
 
+    # Clip long values for display only (raw df and search haystack stay full).
+    clip_cols = {"Mmusculus_gene_name": 22} if clip_hover_cols is None else clip_hover_cols
+
+    def _clip(col, val):
+        s = str(val)
+        n = clip_cols.get(col)
+        return s[:n].rstrip() + "…" if (n is not None and len(s) > n) else s
+
+    # A copy with the clipped columns feeds the hover tooltip; df is untouched.
+    hover_df = df
+    if any(c in df.columns for c in clip_cols):
+        hover_df = df.copy()
+        for col in clip_cols:
+            if col in hover_df.columns:
+                hover_df[col] = hover_df[col].map(lambda v, c=col: _clip(c, v) if pd.notna(v) else v)
+
     fig = px.scatter(
-        df, x="umap_0", y="umap_1", color=color, hover_data=hover,
+        hover_df, x="umap_0", y="umap_1", color=color, hover_data=hover,
         labels=labels or {}, title=title, opacity=0.75,
     )
     fig.update_traces(marker=dict(size=5))
@@ -674,12 +697,18 @@ def plot_umap_searchable(
     ))
     hi = len(fig.data) - 1  # index of the highlight trace
 
-    # Per-protein search payload: coords, a display label, and a lowercased haystack.
-    def _vals(row):
-        return [str(row[f]) for f in search_fields if pd.notna(row.get(f)) and str(row[f]) != ""]
+    # Per-protein search payload: coords, a display label (clipped), and a
+    # lowercased haystack (full, so search matches untruncated values).
+    def _vals(row, clip):
+        out = []
+        for f in search_fields:
+            v = row.get(f)
+            if pd.notna(v) and str(v) != "":
+                out.append(_clip(f, v) if clip else str(v))
+        return out
     records = [
         {"x": float(r["umap_0"]), "y": float(r["umap_1"]),
-         "t": " · ".join(_vals(r)), "h": " ".join(_vals(r)).lower()}
+         "t": " · ".join(_vals(r, True)), "h": " ".join(_vals(r, False)).lower()}
         for _, r in df.iterrows()
     ]
 
