@@ -8,6 +8,7 @@ sequence is correctly treated as stale.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,15 @@ class EmbeddingCache:
             return
         self.dir.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame(list(self._records.values()))
+        # JSON-encode any dict/list cells (e.g. sae_top_features) so the parquet
+        # column stays a uniform string — pyarrow raises on mixed dict/str columns.
+        for col in df.columns:
+            if col == "embedding":  # kept as a native list[float] column
+                continue
+            if df[col].map(lambda v: isinstance(v, dict)).any():
+                df[col] = df[col].map(
+                    lambda v: json.dumps(v) if isinstance(v, (dict, list)) else v
+                )
         df.to_parquet(self.path, index=False)
 
     def to_frame(self) -> pd.DataFrame:

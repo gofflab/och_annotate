@@ -111,7 +111,8 @@ class SAEPipeline:
                 feats = result["sae"]  # top-K summary -> Baserow + cache
                 if cfg.run.use_cache and key in self.cache:
                     rec = self.cache.get(key) or {}
-                    rec["sae_top_features"] = feats
+                    # JSON string (matches Baserow; dicts break the cache parquet).
+                    rec["sae_top_features"] = json.dumps(feats)
                     self.cache.upsert(key, rec)
                 if cfg.run.write_baserow:
                     batch.append({"id": row["id"], sae_col: json.dumps(feats)})

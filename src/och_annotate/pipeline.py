@@ -205,7 +205,9 @@ class EmbeddingPipeline:
                         "embedding": vector,
                     }
                     if sae_feats is not None:
-                        record["sae_top_features"] = sae_feats
+                        # Store as a JSON string (matches Baserow + keeps the cache
+                        # parquet column a uniform string; dicts break to_parquet).
+                        record["sae_top_features"] = json.dumps(sae_feats)
                     self.cache.upsert(key, record)
                 # Richer pooled activations -> local store (never to Baserow).
                 if store is not None:
