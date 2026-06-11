@@ -105,7 +105,7 @@ class Config:
         missing = []
         if baserow and not self.baserow_token:
             missing.append("BASEROW_TOKEN")
-        if biohub and not self.biohub_token:
+        if biohub and not self.biohub_token_pool:
             missing.append("BIOHUB_API_TOKEN")
         if missing:
             raise EnvironmentError(
