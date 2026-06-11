@@ -449,9 +449,17 @@ def build_anndata(df: pd.DataFrame, sae_model: str | None = None, n_features: in
 
 def sae_enrichment(adata, groupby: str = "leiden", method: str = "wilcoxon", n: int | None = None):
     """Per-cluster SAE-feature enrichment (marker-gene style). Returns a tidy DataFrame."""
-    import scanpy as sc
+    import warnings
 
-    sc.tl.rank_genes_groups(adata, groupby=groupby, method=method)
+    import scanpy as sc
+    from pandas.errors import PerformanceWarning
+
+    with warnings.catch_warnings():
+        # scanpy's rank_genes_groups inserts one stats column per group, which
+        # pandas flags as a "highly fragmented DataFrame". Harmless noise that
+        # scales with the cluster count — silence it so it doesn't flood output.
+        warnings.simplefilter("ignore", PerformanceWarning)
+        sc.tl.rank_genes_groups(adata, groupby=groupby, method=method)
     table = sc.get.rank_genes_groups_df(adata, group=None)
     table = table.rename(columns={"group": groupby, "names": "sae_feature"})
     if n is not None:
