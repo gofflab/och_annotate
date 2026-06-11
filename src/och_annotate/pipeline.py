@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from och_annotate.baserow import BaserowClient
 from och_annotate.cache import EmbeddingCache, sequence_hash
 from och_annotate.config import Config
-from och_annotate.esmc import ESMCEmbedder
+from och_annotate.esmc import ESMCEmbedder, _is_credit_limited
 
 
 @dataclass
@@ -36,12 +36,6 @@ class RunSummary:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _is_credit_limited(err: object) -> bool:
-    """True if a failure is the Biohub daily credit-limit / rate cap (HTTP 429)."""
-    msg = str(err).lower()
-    return "credit limit" in msg or "usage cap" in msg
 
 
 class EmbeddingPipeline:
@@ -156,6 +150,19 @@ class EmbeddingPipeline:
         total = len(pending)
         processed = 0
 
+        # Optional full feature store (every non-zero pooled feature), kept
+        # outside Baserow. Streamed per protein, checkpointed per chunk.
+        store = store_model = None
+        if sae_on and cfg.sae.store_full:
+            from och_annotate.analysis import open_sae_feature_store, sae_width_from_model
+
+            store = open_sae_feature_store(cfg)
+            store_model = cfg.sae.models[0]
+            store_width = sae_width_from_model(store_model)
+            if len(cfg.sae.models) > 1:
+                print(f"  store: writing features for {store_model!r} only "
+                      f"(first of {len(cfg.sae.models)} SAE models).")
+
         for start in range(0, total, chunk_size):
             chunk = pending[start : start + chunk_size]
             sequences = [row[cfg.baserow.sequence_column] for row in chunk]
@@ -200,6 +207,12 @@ class EmbeddingPipeline:
                     if sae_feats is not None:
                         record["sae_top_features"] = sae_feats
                     self.cache.upsert(key, record)
+                # Richer pooled activations -> local store (never to Baserow).
+                if store is not None:
+                    rec = (result.get("sae_store") or {}).get(store_model)
+                    if rec:
+                        store.upsert_row(key, rec["indices"], rec["activations"],
+                                         sae_model=store_model, n_features=store_width)
                 if cfg.run.write_baserow:
                     item = {
                         "id": row["id"],
@@ -216,6 +229,8 @@ class EmbeddingPipeline:
             # Checkpoint this chunk before moving on.
             if cfg.run.use_cache:
                 self.cache.save()
+            if store is not None:
+                store.save()
             if cfg.run.write_baserow and batch:
                 self.baserow.update_rows(cfg.baserow.table_id, batch)
 

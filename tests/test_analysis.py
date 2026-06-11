@@ -81,3 +81,59 @@ def test_annotate_enrichment_adds_descriptions():
     enrich = pd.DataFrame({"leiden": ["0", "0"], "sae_feature": ["10", "99"]})
     out = annotate_enrichment(enrich, {"10": "zinc finger"})
     assert list(out["description"]) == ["zinc finger", ""]
+
+
+# --- SaeFeatureStore (full-activation store) --------------------------------
+
+def _store_df():
+    import json as _json
+    return pd.DataFrame({
+        "transcript_id": ["T1", "T2"],
+        "sae_top_features": [
+            {"m": {"indices": [1, 3, 5], "activations": [0.9, 0.5, 0.1]}},
+            _json.dumps({"m": {"indices": [2, 7], "activations": [0.7, 0.2]}}),
+        ],
+    })
+
+
+def test_sae_width_from_model():
+    from och_annotate.analysis import sae_width_from_model
+    assert sae_width_from_model("esmc-6b-2024-12-sae-layer60-k64-codebook16384") == 16384
+    assert sae_width_from_model("no-codebook-here") is None
+    assert sae_width_from_model(None) is None
+
+
+def test_store_upsert_frame_roundtrip_and_idempotent(tmp_path):
+    from och_annotate.analysis import update_sae_feature_store, SaeFeatureStore
+    p = tmp_path / "sae.npz"
+    store, stats = update_sae_feature_store(_store_df(), p, n_features=10)
+    assert stats == {"added": 2, "updated": 0, "total": 2}
+    m = store.to_csr()
+    assert m.shape == (2, 10) and str(m.dtype) == "float32" and m.nnz == 5
+    assert m[0, 1] == pytest_approx(0.9) and m[1, 7] == pytest_approx(0.2)
+    # reload from disk -> identical
+    m2 = SaeFeatureStore(p).to_csr()
+    assert (m != m2).nnz == 0
+    # re-upsert same frame -> nothing added, matrix unchanged
+    s3, st3 = update_sae_feature_store(_store_df(), p, n_features=10)
+    assert st3["added"] == 0 and st3["updated"] == 2 and (s3.to_csr() != m).nnz == 0
+
+
+def test_store_upsert_row_incremental(tmp_path):
+    from och_annotate.analysis import SaeFeatureStore
+    p = tmp_path / "sae.npz"
+    s = SaeFeatureStore(p)
+    assert s.upsert_row("A", [0, 4], [1.0, 2.0], sae_model="m", n_features=8) is True
+    assert s.upsert_row("A", [4], [9.0], n_features=8) is False  # replace existing
+    s.upsert_row("B", [7], [3.0], n_features=8)
+    s.save()
+    s2 = SaeFeatureStore(p)
+    assert s2.ids == ["A", "B"] and s2.n_features == 8
+    m = s2.to_csr()
+    assert m[0, 4] == pytest_approx(9.0) and m[0, 0] == 0.0 and m[1, 7] == pytest_approx(3.0)
+
+
+def pytest_approx(x, tol=1e-6):
+    class _A:
+        def __eq__(self, o): return abs(float(o) - x) <= tol
+    return _A()

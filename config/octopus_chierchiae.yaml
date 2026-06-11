@@ -45,7 +45,7 @@ sae:
   models:
     - "esmc-6b-2024-12-sae-layer60-k64-codebook16384"
   normalize_features: true
-  top_k: 64                      # high-scoring features kept per protein
+  top_k: 64                      # features kept per protein in the BASEROW summary (tunable)
   pooling: "max"                 # pool per-residue SAE activations: "max" or "mean"
   # Per-feature [start, end, peak] residue spans, from the same per-residue
   # activations the API already returns (no extra Biohub cost). Off by default;
@@ -53,6 +53,14 @@ sae:
   # false, or clear the sae column, so existing rows are reprocessed).
   residue_regions: false
   region_threshold: 0.5          # span = residues with activation >= 0.5 * feature peak
+  # Persist the FULL pooled SAE vector (every non-zero feature) to a local sparse
+  # float32 store OUTSIDE Baserow. Independent of top_k above (the tunable Baserow
+  # summary depth); this store is always the complete vector. Off by default —
+  # turning it on needs a re-run (set run.skip_existing false, or run the `sae`
+  # step) — full per-residue activations aren't recoverable from the cache.
+  store_full: false
+  feature_store_path: "data/sae_feature_matrix.npz"
+  store_min_activation: 0.0      # drop pooled activations <= this (numerical dust)
 
 run:
   batch_size: 32                 # proteins per checkpoint chunk (small = less lost on a stall)

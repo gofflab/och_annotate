@@ -22,6 +22,12 @@ YAML file.
    `esmc-6b-2024-12-sae-layer60-k64-codebook16384` (16k features, used in the
    Atlas) and `...-codebook65536` (65k, finer). The standalone `sae` command
    remains for back-filling SAE onto proteins embedded before it was enabled.
+   `top_k` (the count written to Baserow) is the **tunable summary depth**
+   (config `sae.top_k` / `--top-k`). Separately, set `sae.store_full: true` to
+   persist the **full** pooled vector (every non-zero feature) to a local sparse
+   `float32` `.npz` (`sae.feature_store_path`, default
+   `data/sae_feature_matrix.npz`) kept **outside Baserow**. Needs a re-run to
+   populate. Reload with `analysis.SaeFeatureStore(path).to_csr()`.
 5. **Explore** the whole proteome with UMAP + interactive plots, colored by any
    metadata column.
 
@@ -145,6 +151,18 @@ daily cron — add `BASEROW_TOKEN` and `BIOHUB_API_TOKEN` as repository secrets,
 and adjust the cron time to land just after your quota resets. Trigger it
 manually (Actions → *Daily ESMC embed* → *Run workflow*) right after a limit bump
 to drain the backlog at once.
+
+### Multiple Biohub tokens
+
+To finish the backlog faster, set **`BIOHUB_API_TOKENS`** to several tokens
+(comma- or whitespace-separated — e.g. multiple accounts). The pipeline builds
+one client per token and **round-robins requests across them**, so your effective
+daily budget is the *sum* of the accounts. `run.max_workers` (default 16) is the
+concurrency **per token**, and the executor pool **auto-scales to `max_workers ×
+#tokens`** — so throughput rises with each token added, no retuning needed. When
+a token hits its cap it is **retired from the pool** and the run continues on the
+rest; only when *all* tokens are exhausted does it stop early. A single
+`BIOHUB_API_TOKEN` still works exactly as before.
 
 ## Adding another proteome
 

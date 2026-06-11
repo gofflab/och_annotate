@@ -54,6 +54,21 @@ class SAEPipeline:
             self.baserow.ensure_fields(cfg.baserow.table_id, [sae_col])
 
         bw = cfg.baserow
+
+        # Optional full feature store (every non-zero pooled feature) outside
+        # Baserow. When on, a row still needs processing if it is missing from the
+        # store, even if it already has the top_k summary in Baserow.
+        store = store_model = store_width = None
+        if cfg.sae.store_full:
+            from och_annotate.analysis import open_sae_feature_store, sae_width_from_model
+
+            store = open_sae_feature_store(cfg)
+            store_model = cfg.sae.models[0]
+            store_width = sae_width_from_model(store_model)
+            if len(cfg.sae.models) > 1:
+                print(f"  store: writing features for {store_model!r} only "
+                      f"(first of {len(cfg.sae.models)} SAE models).")
+
         rows = self.baserow.fetch_rows(bw.table_id)
         rows = [
             {"id": r["id"], bw.id_column: r.get(bw.id_column),
@@ -68,7 +83,9 @@ class SAEPipeline:
             if not seq or len(seq) > cfg.esmc.max_sequence_length:
                 summary.skipped_empty += 1
                 continue
-            if cfg.run.skip_existing and row.get(sae_col):
+            in_store = store is not None and row.get(bw.id_column) in store
+            already_done = bool(row.get(sae_col)) and (store is None or in_store)
+            if cfg.run.skip_existing and already_done:
                 summary.skipped_existing += 1
                 continue
             pending.append(row)
@@ -91,17 +108,24 @@ class SAEPipeline:
                     summary.failed += 1
                     summary.errors.append(f"{key}: {result}")
                     continue
-                feats = result
+                feats = result["sae"]  # top-K summary -> Baserow + cache
                 if cfg.run.use_cache and key in self.cache:
                     rec = self.cache.get(key) or {}
                     rec["sae_top_features"] = feats
                     self.cache.upsert(key, rec)
                 if cfg.run.write_baserow:
                     batch.append({"id": row["id"], sae_col: json.dumps(feats)})
+                if store is not None:
+                    rec = (result.get("sae_store") or {}).get(store_model)
+                    if rec:
+                        store.upsert_row(key, rec["indices"], rec["activations"],
+                                         sae_model=store_model, n_features=store_width)
                 summary.processed += 1
 
             if cfg.run.use_cache:
                 self.cache.save()
+            if store is not None:
+                store.save()
             if cfg.run.write_baserow and batch:
                 self.baserow.update_rows(bw.table_id, batch)
 
