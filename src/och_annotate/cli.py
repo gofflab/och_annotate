@@ -37,6 +37,8 @@ def _apply_overrides(cfg, args) -> None:
         cfg.sae.models = []
     if getattr(args, "max_workers", None) is not None:
         cfg.run.max_workers = args.max_workers
+    if getattr(args, "store_full", False):  # opt-in: full pooled vector -> local store
+        cfg.sae.store_full = True
 
 
 def cmd_embed(args) -> int:
@@ -117,7 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--sae-model", action="append", default=None, metavar="ID",
                        help="Override sae.models (repeatable), e.g. esmc-6b-2024-12-sae-layer60-k64-codebook16384")
         p.add_argument("--max-workers", type=int, default=None,
-                       help="Override run.max_workers: concurrent Biohub requests (<=64)")
+                       help="Override run.max_workers: concurrent Biohub requests per token (<=64)")
+        p.add_argument("--store-full", action="store_true",
+                       help="Also persist the full pooled SAE vector per protein to the "
+                            "local store (sae.store_full); Baserow keeps the top_k summary")
 
     p_embed = sub.add_parser("embed", help="Fetch sequences and write ESMC embeddings (+SAE if configured)")
     add_config(p_embed)
