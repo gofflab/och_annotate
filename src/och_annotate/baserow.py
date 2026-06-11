@@ -6,6 +6,7 @@ Only the endpoints we need, with token auth and pagination. Uses
 
 from __future__ import annotations
 
+import time
 from typing import Any, Iterator
 
 import requests
@@ -15,9 +16,10 @@ _LONG_TEXT = "long_text"
 
 
 class BaserowClient:
-    def __init__(self, base_url: str, token: str, *, timeout: int = 60):
+    def __init__(self, base_url: str, token: str, *, timeout: int = 60, max_retries: int = 5):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Token {token}"})
 
@@ -26,11 +28,34 @@ class BaserowClient:
         return f"{self.base_url}/api/{path.lstrip('/')}"
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
-        resp = self.session.request(method, self._url(path), timeout=self.timeout, **kwargs)
-        resp.raise_for_status()
-        if resp.status_code == 204 or not resp.content:
-            return None
-        return resp.json()
+        """Issue a request, retrying transient network/5xx errors with backoff.
+
+        Baserow occasionally drops connections (``RemoteDisconnected``) or returns
+        5xx; without a retry a single blip aborts a long embedding run mid-write.
+        All our calls are idempotent (GETs, and row updates that set the same
+        values), so retrying is safe. Client errors (4xx) raise immediately.
+        """
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.session.request(
+                    method, self._url(path), timeout=self.timeout, **kwargs
+                )
+                resp.raise_for_status()
+                if resp.status_code == 204 or not resp.content:
+                    return None
+                return resp.json()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as err:
+                last_err = err  # transient transport error -> retry
+            except requests.exceptions.HTTPError as err:
+                status = getattr(err.response, "status_code", None)
+                if status is not None and 500 <= status < 600:
+                    last_err = err  # transient server error -> retry
+                else:
+                    raise  # 4xx (auth, bad request, ...) -> don't retry
+            if attempt < self.max_retries - 1:
+                time.sleep(min(2 ** attempt, 30))
+        raise last_err  # type: ignore[misc]
 
     # ---- fields ------------------------------------------------------------
     def list_fields(self, table_id: int) -> list[dict[str, Any]]:
