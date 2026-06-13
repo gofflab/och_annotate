@@ -79,15 +79,43 @@ class EmbeddingPipeline:
 
     def _fetch_rows(self) -> list[dict]:
         bw = self.config.baserow
-        wanted = set(bw.metadata_columns) | {
-            bw.sequence_column,
-            bw.id_column,
-            bw.output_columns["embedding"],
-        }
-        if self._sae_enabled:
-            wanted.add(bw.output_columns["sae"])
+        emb_col = bw.output_columns["embedding"]
+        sae_col = bw.output_columns["sae"] if self._sae_enabled else None
+        small = sorted(set(bw.metadata_columns) | {bw.sequence_column, bw.id_column})
+        # Fast resume path: once the local cache holds embeddings it is the source
+        # of truth for done-ness, so fetch ONLY the small columns and skip the big
+        # embedding/SAE blobs. Pulling those re-downloads every existing embedding
+        # each run (hundreds of MB; the sweep grows without bound and crawls when
+        # Baserow is slow). On a cold start (empty cache), fetch the embedding/SAE
+        # columns so done-ness can still come from Baserow. (Baserow's empty /
+        # not_empty filters are unreliable on this table, so we don't use them.)
+        if self.config.run.use_cache and len(self.cache) > 0:
+            try:
+                rows = self.baserow.fetch_rows(bw.table_id, fields=small)
+            except Exception:  # noqa: BLE001 - field API trouble -> full-row fallback
+                pass
+            else:
+                # Done-ness from the cache by id (an embedding/SAE is already
+                # stored), independent of the seq-hash freshness check — some
+                # cache records (back-filled from Baserow) lack a seq_hash but are
+                # genuinely embedded. Re-attach presence markers so the existing
+                # _has_embedding/_has_sae logic skips them without us downloading
+                # any blob.
+                recs = self.cache._records
+                done_emb = {k for k, v in recs.items() if v.get("embedding") is not None}
+                done_sae = {k for k, v in recs.items() if v.get("sae_top_features")}
+                out = []
+                for r in rows:
+                    rec = {"id": r["id"], **{k: r.get(k) for k in small}}
+                    tid = rec.get(bw.id_column)
+                    if tid in done_emb:
+                        rec[emb_col] = "1"
+                    if sae_col and tid in done_sae:
+                        rec[sae_col] = "1"
+                    out.append(rec)
+                return out
+        wanted = set(small) | {emb_col} | ({sae_col} if sae_col else set())
         rows = self.baserow.fetch_rows(bw.table_id)
-        # keep the Baserow integer row id (needed for write-back) + wanted columns
         return [{"id": r["id"], **{k: r.get(k) for k in wanted}} for r in rows]
 
     # ---- run ---------------------------------------------------------------
