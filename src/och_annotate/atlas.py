@@ -127,6 +127,17 @@ def fetch_feature_descriptions(
     if cache_path and len(full):
         p = Path(cache_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        full.to_parquet(p, index=False) if p.suffix == ".parquet" else full.to_csv(p, index=False)
+        if p.suffix == ".parquet":
+            # Atlas fields mix numbers (e.g. uniref90_idf) with "" defaults, which
+            # breaks parquet's per-column type inference. Store every column except
+            # the feature id as a string; the notebook re-parses numerics with
+            # pd.to_numeric(..., errors="coerce").
+            out = full.copy()
+            for col in out.columns:
+                if col != "feature":
+                    out[col] = out[col].astype(str)
+            out.to_parquet(p, index=False)
+        else:
+            full.to_csv(p, index=False)
 
     return full[full["feature"].isin(wanted)].reset_index(drop=True)
