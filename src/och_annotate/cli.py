@@ -37,6 +37,8 @@ def _apply_overrides(cfg, args) -> None:
         cfg.sae.models = []
     if getattr(args, "max_workers", None) is not None:
         cfg.run.max_workers = args.max_workers
+    if getattr(args, "batch_size", None) is not None:
+        cfg.run.batch_size = args.batch_size
     if getattr(args, "store_full", False):  # opt-in: full pooled vector -> local store
         cfg.sae.store_full = True
 
@@ -120,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Override sae.models (repeatable), e.g. esmc-6b-2024-12-sae-layer60-k64-codebook16384")
         p.add_argument("--max-workers", type=int, default=None,
                        help="Override run.max_workers: concurrent Biohub requests per token (<=64)")
+        p.add_argument("--batch-size", type=int, default=None,
+                       help="Override run.batch_size: proteins per checkpointed chunk. Effective "
+                            "concurrency is min(batch_size, max_workers x #tokens), so raise this "
+                            "alongside --max-workers to actually parallelize more.")
         p.add_argument("--store-full", action="store_true",
                        help="Also persist the full pooled SAE vector per protein to the "
                             "local store (sae.store_full); Baserow keeps the top_k summary")
