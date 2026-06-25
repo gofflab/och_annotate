@@ -447,6 +447,38 @@ def build_anndata(df: pd.DataFrame, sae_model: str | None = None, n_features: in
     return adata
 
 
+def build_anndata_full(df: pd.DataFrame, store_path, *, id_column: str = "transcript_id"):
+    """Like :func:`build_anndata` but ``X`` = the FULL pooled SAE vectors.
+
+    Reads the complete (every non-zero feature) per-protein vectors from a
+    :class:`SaeFeatureStore` ``.npz`` instead of the top-K ``sae_top_features``.
+    Rows are aligned to ``df`` metadata by ``id_column``; only proteins present
+    in both the store and ``df`` are kept (in ``df`` order). ``obsm['X_esmc']`` =
+    dense ESMC embeddings, ``obs`` = metadata.
+    """
+    import anndata as ad
+
+    store = SaeFeatureStore(store_path, id_column=id_column)
+    matrix = store.to_csr().tocsr()
+    pos = {tid: i for i, tid in enumerate(store.ids)}
+
+    keep = df[id_column].map(lambda t: t in pos).to_numpy()
+    sub = df[keep].reset_index(drop=True)
+    rows = [pos[t] for t in sub[id_column]]
+    X = matrix[rows]
+
+    obs = sub[[c for c in sub.columns if c not in ("embedding", "sae_top_features")]].copy()
+    obs = obs.reset_index(drop=True)
+    obs.index = obs.index.astype(str)
+    adata = ad.AnnData(X=X.astype("float32"), obs=obs)
+    adata.var_names = [str(j) for j in range(X.shape[1])]
+    adata.obsm["X_esmc"] = embedding_matrix(sub)
+    if id_column in obs.columns and obs[id_column].is_unique:
+        adata.obs_names = obs[id_column].astype(str).values
+    adata.uns["sae_model"] = store.sae_model
+    return adata
+
+
 def sae_enrichment(adata, groupby: str = "leiden", method: str = "wilcoxon", n: int | None = None):
     """Per-cluster SAE-feature enrichment (marker-gene style). Returns a tidy DataFrame."""
     import warnings
