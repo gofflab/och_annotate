@@ -86,7 +86,11 @@ class BaserowClient:
     def iter_rows(
         self, table_id: int, *, page_size: int = 200, fields: list[str] | None = None
     ) -> Iterator[dict[str, Any]]:
-        """Yield every row, transparently following pagination."""
+        """Yield every row, transparently following pagination.
+
+        ``fields`` limits the returned columns via ``?include=`` — much cheaper
+        than full rows when the big embedding/SAE blobs aren't needed.
+        """
         page = 1
         params: dict[str, Any] = {"user_field_names": "true", "size": page_size}
         if fields:

@@ -831,6 +831,185 @@ def plot_umap_searchable(
     return HTML(html)
 
 
+def table_searchable(
+    df: pd.DataFrame,
+    *,
+    title: str | None = None,
+    caption: str | None = None,
+    page_size: int = 10,
+    formats: dict | None = None,
+    max_colwidth: int | None = 80,
+    order: list | None = None,
+    table_id: str | None = None,
+):
+    """Render a DataFrame as a searchable / paginated / sortable HTML table.
+
+    A companion to :func:`plot_umap_searchable` for the large static tables in
+    the notebooks (cluster enrichment, per-cluster profile, novelty candidates).
+    Instead of a giant scrolling ``display(<styled df>)`` it emits a compact
+    interactive table — a search box, prev/next paging at ``page_size`` rows, and
+    click-to-sort columns — that keeps working in the static ``nbconvert`` HTML
+    export with no live kernel.
+
+    Implementation is **fully self-contained** — a small inline vanilla-JS pager
+    (search box, prev/next paging at ``page_size`` rows, click-to-sort columns,
+    a rows-per-page selector) embedded directly in the cell output, with no
+    external scripts. Unlike the earlier DataTables/CDN approach it works offline
+    and in a local ``file://`` export with no internet connection.
+
+    ``formats`` maps a column name to either a Python format string (``"{:.2f}"``)
+    or a callable; values are formatted for display only. Numeric columns keep a
+    ``data-sort`` attribute with their raw value so sorting stays numeric even
+    after formatting. ``max_colwidth`` truncates long cell text for display (the
+    full value stays in the title tooltip and remains searchable). ``order`` is a
+    list of ``[col_name, "asc"|"desc"]`` initial sorts.
+
+    Returns an ``IPython.display.HTML`` object so a notebook cell renders it
+    directly.
+    """
+    import html as _html
+    import re
+    import uuid
+
+    from IPython.display import HTML
+
+    formats = formats or {}
+    tid = table_id or ("tbl-" + uuid.uuid4().hex[:8])
+    cols = list(df.columns)
+
+    def _fmt(col, val):
+        if pd.isna(val):
+            return ""
+        f = formats.get(col)
+        if f is None:
+            return str(val)
+        try:
+            return f(val) if callable(f) else f.format(val)
+        except (ValueError, TypeError):
+            return str(val)
+
+    def _cell(col, val):
+        disp = _fmt(col, val)
+        full = disp
+        if max_colwidth is not None and len(disp) > max_colwidth:
+            disp = disp[:max_colwidth].rstrip() + "…"
+        # Numeric columns carry a data-sort with the raw value so DataTables
+        # sorts them numerically even though the visible text is formatted.
+        sort_attr = ""
+        if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, bool):
+            sort_attr = f' data-order="{float(val)}"'
+        tip = f' title="{_html.escape(full, quote=True)}"' if full != disp else ""
+        return f"<td{sort_attr}{tip}>{_html.escape(disp)}</td>"
+
+    head = "".join(f"<th>{_html.escape(str(c))}</th>" for c in cols)
+    body_rows = []
+    for _, row in df.iterrows():
+        cells = "".join(_cell(c, row[c]) for c in cols)
+        body_rows.append(f"<tr>{cells}</tr>")
+    body = "\n".join(body_rows)
+
+    order_js = "[]"
+    if order:
+        idx = {c: i for i, c in enumerate(cols)}
+        order_js = "[" + ",".join(
+            f"[{idx[c]},'{d}']" for c, d in order if c in idx
+        ) + "]"
+
+    cap = f'<div style="color:#888;font-size:11px;margin:2px 0 6px 0">{_html.escape(caption)}</div>' if caption else ""
+    ttl = f'<div style="font-weight:600;font-size:14px;margin:8px 0 2px 0">{_html.escape(title)}</div>' if title else ""
+
+    tokens = {
+        "__TID__": tid,
+        "__PAGE__": str(int(page_size)),
+        "__ORDER__": order_js,
+    }
+    template = """
+<style>
+  #__TID___wrap{font-family:sans-serif;font-size:12px;max-width:1100px}
+  #__TID___wrap table{border-collapse:collapse;width:100%}
+  #__TID___wrap th,#__TID___wrap td{border-bottom:1px solid #e8e8e8;padding:3px 8px;text-align:left;vertical-align:top}
+  #__TID___wrap th{cursor:pointer;background:#f6f8fa;user-select:none;white-space:nowrap}
+  #__TID___wrap th:hover{background:#eef3fa}
+  #__TID___wrap tbody tr:nth-child(even){background:#fafbfd}
+  #__TID___wrap .ts-ctrl{display:flex;gap:10px;align-items:center;margin:4px 0 6px 0;flex-wrap:wrap}
+  #__TID___wrap .ts-ctrl input{padding:3px 6px;border:1px solid #ccc;border-radius:4px;font-size:12px}
+  #__TID___wrap .ts-ctrl select{padding:2px 4px;border:1px solid #ccc;border-radius:4px;font-size:12px}
+  #__TID___wrap .ts-ctrl button{padding:2px 9px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer}
+  #__TID___wrap .ts-ctrl button:disabled{opacity:.4;cursor:default}
+  #__TID___wrap .ts-info{color:#666}
+</style>
+<div id="__TID___wrap">
+  __TTL____CAP__
+  <div class="ts-ctrl">
+    <input id="__TID___q" type="search" placeholder="Search…">
+    <span>Rows <select id="__TID___ps"></select></span>
+    <button id="__TID___prev" type="button">‹ Prev</button>
+    <button id="__TID___next" type="button">Next ›</button>
+    <span class="ts-info" id="__TID___info"></span>
+  </div>
+  <table id="__TID__">
+    <thead><tr>__HEAD__</tr></thead>
+    <tbody>
+__BODY__
+    </tbody>
+  </table>
+</div>
+<script>
+(function(){
+  var root=document.getElementById("__TID___wrap");
+  if(!root || root.getAttribute("data-ts-init")) return;
+  root.setAttribute("data-ts-init","1");
+  var table=document.getElementById("__TID__"), tbody=table.tBodies[0];
+  var allRows=Array.prototype.slice.call(tbody.rows);
+  var ths=Array.prototype.slice.call(table.tHead.rows[0].cells);
+  var q=document.getElementById("__TID___q"), ps=document.getElementById("__TID___ps");
+  var prev=document.getElementById("__TID___prev"), next=document.getElementById("__TID___next");
+  var info=document.getElementById("__TID___info");
+  var pageSize=__PAGE__, page=0, filtered=allRows.slice(), sortCol=-1, sortDir=1;
+  allRows.forEach(function(r){ r._txt=r.textContent.toLowerCase(); });
+  var sizes=[10,25,50,100]; if(pageSize>0 && sizes.indexOf(pageSize)<0) sizes.push(pageSize);
+  sizes.sort(function(a,b){return a-b;});
+  ps.innerHTML=sizes.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('')+'<option value="-1">All</option>';
+  ps.value=String(pageSize);
+  function cellVal(r,i){ var td=r.cells[i]; if(!td) return "";
+    var o=td.getAttribute("data-order");
+    if(o!==null && o!=="" && !isNaN(parseFloat(o))) return parseFloat(o);
+    return td.textContent.toLowerCase(); }
+  function sortBy(col,dir){ sortCol=col; sortDir=dir;
+    filtered.sort(function(a,b){ var x=cellVal(a,col), y=cellVal(b,col);
+      return x<y?-1*dir:(x>y?1*dir:0); });
+    ths.forEach(function(th,i){ var base=th.textContent.replace(/[ \\u25b2\\u25bc]+$/,"");
+      th.textContent=base+(i===col?(dir>0?" \\u25b2":" \\u25bc"):""); }); }
+  function render(){ var n=filtered.length, size=pageSize<0?n:pageSize;
+    var pages=size>0?Math.max(1,Math.ceil(n/size)):1;
+    if(page>=pages) page=pages-1; if(page<0) page=0;
+    var start=pageSize<0?0:page*size, end=pageSize<0?n:Math.min(n,start+size);
+    allRows.forEach(function(r){ r.style.display="none"; });
+    for(var i=start;i<end;i++) filtered[i].style.display="";
+    info.textContent = n ? ("Showing "+(start+1)+"\\u2013"+end+" of "+n+
+      (n!==allRows.length?(" (filtered from "+allRows.length+")"):"")) : "No matching rows";
+    prev.disabled=page<=0; next.disabled=page>=pages-1; }
+  function applyFilter(){ var term=q.value.toLowerCase().trim();
+    filtered = term ? allRows.filter(function(r){return r._txt.indexOf(term)>-1;}) : allRows.slice();
+    if(sortCol>=0) sortBy(sortCol,sortDir); page=0; render(); }
+  q.addEventListener("input",applyFilter);
+  ps.addEventListener("change",function(){ pageSize=parseInt(ps.value,10); page=0; render(); });
+  prev.addEventListener("click",function(){ page--; render(); });
+  next.addEventListener("click",function(){ page++; render(); });
+  ths.forEach(function(th,i){ th.addEventListener("click",function(){ sortBy(i,sortCol===i?-sortDir:1); page=0; render(); }); });
+  var ord=__ORDER__;
+  if(ord && ord.length){ for(var j=ord.length-1;j>=0;j--){ sortBy(ord[j][0], ord[j][1]==="desc"?-1:1); } }
+  render();
+})();
+</script>
+"""
+    html = template.replace("__HEAD__", head).replace("__BODY__", body)
+    html = html.replace("__TTL__", ttl).replace("__CAP__", cap)
+    for k, v in tokens.items():
+        html = html.replace(k, v)
+    return HTML(html)
+
+
 def save_html(fig, path: str) -> None:
     """Explicit opt-in export of an interactive plot to a standalone HTML file."""
     fig.write_html(path, include_plotlyjs="cdn")
