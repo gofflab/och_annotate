@@ -1,0 +1,55 @@
+# Euprymna berryi proteome — companion to octopus_chierchiae.yaml.
+# Fully independent of the octopus run: separate Baserow table, cache_dir,
+# feature_store_path, and output-CSV names, so nothing octopus is touched.
+#
+#   och-annotate embed -c config/euprymna_berryi.yaml --store-full
+#   OCH_ANNOTATE_CONFIG=config/euprymna_berryi.yaml \
+#     jupyter nbconvert --to html --execute notebooks/explore_proteome_sae.ipynb
+name: euprymna_berryi
+
+baserow:
+  base_url: "https://baserow.gofflab.org"
+  database_id: 208
+  table_id: 1032
+  sequence_column: "protein"       # AA sequence
+  id_column: "gene_id"             # stable per-protein key (caching/idempotency + join key)
+  metadata_columns:
+    - "gene_id"
+    - "gene_name"
+  # Semantic roles for the exploration notebooks.
+  name_column: "gene_name"         # per-protein display name
+  ortholog_column: null            # N/A for this species yet (reference = mouse, add when available)
+  orthogroup_column: null          # N/A yet — no OrthoFinder orthogroups for this set
+  output_columns:                  # written back to table 1032; created if missing
+    embedding: "esmc_embedding"
+    model: "esmc_model"
+    embedded_at: "esmc_embedded_at"
+    sae: "sae_top_features"
+
+esmc:
+  model: "esmc-6b-2024-12"
+  url: "https://biohub.ai"
+  pooling: "mean"
+  max_sequence_length: 2048
+  request_timeout: 120
+
+sae:
+  models:
+    - "esmc-6b-2024-12-sae-layer60-k64-codebook16384"
+  normalize_features: true
+  top_k: 64
+  pooling: "max"
+  residue_regions: false
+  region_threshold: 0.5
+  store_full: true                 # capture the full SAE vector from day one
+  feature_store_path: "data/sae_feature_matrix_euprymna_berryi.npz"
+  store_min_activation: 0.0
+
+run:
+  batch_size: 32
+  max_workers: 16                  # single high-credit token, ~retry-free
+  max_attempts: 10
+  cache_dir: ".cache/euprymna_berryi"
+  write_baserow: true
+  use_cache: true
+  skip_existing: true

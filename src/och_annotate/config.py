@@ -29,6 +29,13 @@ class BaserowConfig:
     id_column: str
     metadata_columns: list[str]
     output_columns: dict[str, str]
+    # Semantic column roles used by the exploration notebooks (analysis, not the
+    # embed/SAE pipeline). Each names a column in ``metadata_columns`` or is left
+    # ``None`` when that species has no such column — the notebooks degrade
+    # gracefully (skip the flag / drop the hover field) when a role is unset.
+    name_column: str | None = None        # per-protein display name
+    ortholog_column: str | None = None    # reference-species ortholog (novelty: missing-ortholog)
+    orthogroup_column: str | None = None  # OrthoFinder id (sweep tuning + novelty: singleton)
 
 
 @dataclass

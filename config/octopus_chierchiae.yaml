@@ -21,6 +21,11 @@ baserow:
     - "Ochierchiae_name"
     - "Mmusculus_gene_name"        # mouse ortholog gene name(s)
     - "orthogroup"                 # OrthoFinder orthogroup id
+  # Semantic roles for the exploration notebooks (map to columns above; leave a
+  # role unset for a species that lacks it and the notebooks skip it gracefully).
+  name_column: "Ochierchiae_name"        # per-protein display name
+  ortholog_column: "Mmusculus_gene_name" # reference-species ortholog (novelty: missing-ortholog)
+  orthogroup_column: "orthogroup"        # OrthoFinder id (sweep tuning + novelty: singleton)
   # Columns written back with results. Created automatically if missing.
   output_columns:
     embedding: "esmc_embedding"      # JSON list[float] (mean-pooled vector)

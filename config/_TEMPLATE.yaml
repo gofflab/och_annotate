@@ -1,0 +1,63 @@
+# Template for adding another proteome / species. Copy this file to
+# config/<species>.yaml, fill in the <...> placeholders, then:
+#
+#   1. Populate a Baserow table with the proteome (sequence + id + metadata cols).
+#   2. och-annotate embed -c config/<species>.yaml --store-full   # embeddings + SAE + full store
+#   3. Explore:  OCH_ANNOTATE_CONFIG=config/<species>.yaml \
+#        jupyter nbconvert --to html --execute notebooks/explore_proteome_sae.ipynb
+#
+# The embed/SAE pipeline and all three exploration notebooks are species-agnostic:
+# they read every column name and path from THIS file, so no code/notebook edits.
+name: <species_slug>              # e.g. octopus_bimaculoides — used in cache dir + output filenames
+
+baserow:
+  base_url: "https://baserow.gofflab.org"
+  database_id: <db_id>
+  table_id: <table_id>
+  sequence_column: "protein_sequence"   # column holding the AA sequence
+  id_column: "transcript_id"            # stable per-protein key (caching/idempotency + join key)
+  metadata_columns:                     # everything you want available for hover/coloring/analysis
+    - "gene_id"
+    - "transcript_id"
+    - "chromosome"
+    - "<species>_name"                  # per-protein display name column
+    - "<ortholog>_gene_name"            # reference-species ortholog name column
+    - "orthogroup"                      # OrthoFinder orthogroup id
+  # Semantic roles the notebooks use (each must name one of metadata_columns, or be
+  # left blank/removed if this species lacks it — the notebooks degrade gracefully).
+  name_column: "<species>_name"         # -> hover labels + candidate names
+  ortholog_column: "<ortholog>_gene_name"  # -> novelty "missing-ortholog" flag
+  orthogroup_column: "orthogroup"       # -> sweep tuning (AMI) + novelty "singleton" flag
+  output_columns:                       # written back to Baserow; created if missing
+    embedding: "esmc_embedding"
+    model: "esmc_model"
+    embedded_at: "esmc_embedded_at"
+    sae: "sae_top_features"
+
+esmc:
+  model: "esmc-6b-2024-12"
+  url: "https://biohub.ai"
+  pooling: "mean"
+  max_sequence_length: 2048
+  request_timeout: 120
+
+sae:
+  models:
+    - "esmc-6b-2024-12-sae-layer60-k64-codebook16384"   # same ESM Atlas SAE for any species
+  normalize_features: true
+  top_k: 64
+  pooling: "max"
+  residue_regions: false
+  region_threshold: 0.5
+  store_full: false                     # set true (or pass --store-full) to persist full SAE vectors
+  feature_store_path: "data/sae_feature_matrix_<species_slug>.npz"  # keep per-species (avoid collisions)
+  store_min_activation: 0.0
+
+run:
+  batch_size: 32
+  max_workers: 16                       # per token; single high-credit token ~32-wide is the safe ceiling
+  max_attempts: 10
+  cache_dir: ".cache/<species_slug>"    # keep per-species
+  write_baserow: true
+  use_cache: true
+  skip_existing: true
